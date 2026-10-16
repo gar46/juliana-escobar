@@ -1,11 +1,10 @@
-import { handleAssistant } from "../server/logic.mjs";
+import { handleAssistant, handleVoice } from "../server/logic.mjs";
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/api/assistant") {
-      return new Response("No encontrado.", { status: 404 });
-    }
-    return handleAssistant(request, env);
+    if (url.pathname === "/api/assistant") return handleAssistant(request, env);
+    if (url.pathname === "/api/voice") return handleVoice(request, env);
+    return new Response("No encontrado.", { status: 404 });
   },
 };

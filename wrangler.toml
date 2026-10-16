@@ -4,6 +4,8 @@ compatibility_date = "2026-10-16"
 
 [vars]
 GROK_MODEL = "grok-3"
+GROK_VOICE = "carina"
+GROK_VOICE_LANGUAGE = "es-MX"
 
 [[d1_databases]]
 binding = "DB"

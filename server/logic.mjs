@@ -8,7 +8,11 @@ const ADMIN_FAIL_LIMIT = 5;
 const ADMIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_COMMAND = /^admin (\S+)(?: (\d{4}-\d{2}-\d{2}))?$/;
 
+const VOICE_LIMIT = 30;
+const VOICE_MAX_CHARS = 1200;
+
 const hits = new Map();
+const voiceHits = new Map();
 const adminFails = new Map();
 
 const STUDIO = {
@@ -61,6 +65,64 @@ export async function handleAssistant(request, env) {
     const message = error instanceof Error ? error.message : "unknown";
     console.error("assistant_error", message);
     return json({ error: unavailableMessage() }, 502, origin, env);
+  }
+}
+
+export async function handleVoice(request, env) {
+  const origin = request.headers.get("origin") || "";
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: cors(origin, env) });
+  }
+  if (request.method !== "POST") {
+    return json({ error: "Método no permitido." }, 405, origin, env);
+  }
+  if (!allowedOrigin(origin, env)) {
+    return json({ error: "Origen no permitido." }, 403, origin, env);
+  }
+  if (!env.GROK_API_KEY) {
+    return json({ error: "Voz no configurada." }, 503, origin, env);
+  }
+  if (limitedBy(voiceHits, clientIp(request, env), VOICE_LIMIT)) {
+    return json({ error: "Demasiadas solicitudes de voz." }, 429, origin, env);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "No pude leer el texto." }, 400, origin, env);
+  }
+  const text = clean(body.text, VOICE_MAX_CHARS);
+  if (!text) return json({ error: "Texto vacío." }, 400, origin, env);
+
+  try {
+    const response = await fetch("https://api.x.ai/v1/tts", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text,
+        voice_id: env.GROK_VOICE || "carina",
+        language: env.GROK_VOICE_LANGUAGE || "es-MX",
+        speed: 0.95,
+        text_normalization: true,
+        output_format: { codec: "mp3", sample_rate: 24000, bit_rate: 96000 },
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("voice_error", response.status, detail.slice(0, 160));
+      return json({ error: "La voz no está disponible." }, 502, origin, env);
+    }
+    return new Response(response.body, {
+      status: 200,
+      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", ...cors(origin, env) },
+    });
+  } catch (error) {
+    console.error("voice_error", error instanceof Error ? error.message : "unknown");
+    return json({ error: "La voz no está disponible." }, 502, origin, env);
   }
 }
 
@@ -438,14 +500,18 @@ function sanitize(input) {
 }
 
 function limited(ip) {
+  return limitedBy(hits, ip, RATE_LIMIT);
+}
+
+function limitedBy(store, ip, limit) {
   const now = Date.now();
-  const recent = (hits.get(ip) || []).filter((time) => now - time < RATE_WINDOW_MS);
-  if (recent.length >= RATE_LIMIT) {
-    hits.set(ip, recent);
+  const recent = (store.get(ip) || []).filter((time) => now - time < RATE_WINDOW_MS);
+  if (recent.length >= limit) {
+    store.set(ip, recent);
     return true;
   }
   recent.push(now);
-  hits.set(ip, recent);
+  store.set(ip, recent);
   return false;
 }
 

@@ -55,6 +55,9 @@ const endpoint =
     ? "/api/assistant"
     : "https://juliana-asistente.juliana-escobar.workers.dev/api/assistant");
 
+const voiceEndpoint = endpoint.replace(/assistant$/, "voice");
+const SILENCE_MS = 2000;
+
 const ADMIN_PATTERN = /^\s*admin\s+\S+/i;
 const URL_PATTERN = /(https?:\/\/[^\s)]+)/g;
 
@@ -103,6 +106,27 @@ function formatDate(iso: string) {
     month: "long",
     timeZone: "UTC",
   }).format(new Date(`${iso}T00:00:00Z`));
+}
+
+function spokenHour(hora: string) {
+  const hour = Number(hora.slice(0, 2));
+  if (Number.isNaN(hour)) return hora;
+  const twelve = hour % 12 || 12;
+  const part = hour < 12 ? "de la mañana" : hour < 19 ? "de la tarde" : "de la noche";
+  return `${twelve === 1 ? "la una" : `las ${twelve}`} ${part}`;
+}
+
+function agendaSpeech(reply: string, turnos: Turno[]) {
+  if (!turnos.length) return reply;
+  const byDate = turnos.reduce<Record<string, Turno[]>>((groups, turno) => {
+    (groups[turno.fecha] ||= []).push(turno);
+    return groups;
+  }, {});
+  const days = Object.entries(byDate).map(([fecha, items]) => {
+    const list = items.map((turno) => `a ${spokenHour(turno.hora)}, ${turno.nombre}, ${turno.servicio}`).join(". ");
+    return `El ${formatDate(fecha)}: ${list}.`;
+  });
+  return `${reply} ${days.join(" ")}`;
 }
 
 function MessageText({ text }: { text: string }) {
@@ -159,6 +183,10 @@ export function Assistant() {
   const recognitionRef = useRef<Recognition | null>(null);
   const sessionRef = useRef(0);
   const closeRef = useRef<() => void>(() => {});
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const grokVoiceFailedAt = useRef(0);
+  const heardRef = useRef("");
+  const silenceRef = useRef<number | undefined>(undefined);
   const controls = useRef({ open: false, pending: false, speaking: false, wantMic: true, voiceOn: true });
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -181,6 +209,8 @@ export function Assistant() {
   }, []);
 
   const stopListening = useCallback(() => {
+    window.clearTimeout(silenceRef.current);
+    heardRef.current = "";
     sessionRef.current += 1;
     const recognition = recognitionRef.current;
     recognitionRef.current = null;
@@ -205,6 +235,16 @@ export function Assistant() {
     } catch {
       /* ya estaba detenido */
     }
+    const flush = () => {
+      window.clearTimeout(silenceRef.current);
+      const spoken = heardRef.current.trim();
+      heardRef.current = "";
+      if (!spoken || controls.current.pending) return false;
+      setDraft("");
+      stopListening();
+      void sendRef.current(spoken);
+      return true;
+    };
     const recognition = new Constructor();
     recognition.lang = "es-CO";
     recognition.continuous = true;
@@ -212,19 +252,17 @@ export function Assistant() {
     recognition.maxAlternatives = 1;
     recognition.onresult = (event) => {
       let interim = "";
-      let finalText = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
         const transcript = result[0]?.transcript || "";
-        if (result.isFinal) finalText += transcript;
+        if (result.isFinal) heardRef.current = `${heardRef.current} ${transcript}`.trim();
         else interim += transcript;
       }
-      if (interim) setDraft(interim);
-      const spoken = finalText.trim();
-      if (!spoken || controls.current.pending) return;
-      setDraft("");
-      stopListening();
-      void sendRef.current(spoken);
+      setDraft(`${heardRef.current} ${interim}`.trim());
+      window.clearTimeout(silenceRef.current);
+      silenceRef.current = window.setTimeout(() => {
+        if (heardRef.current.trim()) flush();
+      }, SILENCE_MS);
     };
     recognition.onerror = (event) => {
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
@@ -235,7 +273,7 @@ export function Assistant() {
     recognition.onend = () => {
       if (sessionRef.current !== session) return;
       setListening(false);
-      resumeMic();
+      if (!flush()) resumeMic();
     };
     recognitionRef.current = recognition;
     try {
@@ -246,12 +284,25 @@ export function Assistant() {
     }
   }, [resumeMic, stopListening]);
 
-  const speak = useCallback(
+  const stopSpeaking = useCallback(() => {
+    controls.current.speaking = false;
+    audioRef.current?.pause();
+    audioRef.current = null;
+    if (canSpeak) window.speechSynthesis.cancel();
+  }, [canSpeak]);
+
+  const finishSpeaking = useCallback(() => {
+    controls.current.speaking = false;
+    audioRef.current = null;
+    resumeMic();
+  }, [resumeMic]);
+
+  const speakWithBrowser = useCallback(
     (text: string) => {
-      if (!canSpeak || !controls.current.voiceOn) return;
-      window.speechSynthesis.cancel();
-      controls.current.speaking = true;
-      stopListening();
+      if (!canSpeak) {
+        finishSpeaking();
+        return;
+      }
       const voice = pickVoice();
       const parts = speakable(text)
         .split(/(?<=[.!?])\s+/)
@@ -259,9 +310,9 @@ export function Assistant() {
         .filter(Boolean);
       let index = 0;
       const next = () => {
-        if (!controls.current.speaking || index >= parts.length) {
-          controls.current.speaking = false;
-          resumeMic();
+        if (!controls.current.speaking) return;
+        if (index >= parts.length) {
+          finishSpeaking();
           return;
         }
         const utterance = new SpeechSynthesisUtterance(parts[index]);
@@ -281,7 +332,49 @@ export function Assistant() {
       next();
       window.speechSynthesis.resume();
     },
-    [canSpeak, resumeMic, stopListening],
+    [canSpeak, finishSpeaking],
+  );
+
+  const speak = useCallback(
+    async (text: string) => {
+      if (!controls.current.voiceOn) return;
+      stopSpeaking();
+      controls.current.speaking = true;
+      stopListening();
+      const spoken = speakable(text);
+
+      if (Date.now() - grokVoiceFailedAt.current > 5 * 60 * 1000) {
+        try {
+          const response = await fetch(voiceEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: spoken }),
+          });
+          if (!response.ok) throw new Error(String(response.status));
+          const url = URL.createObjectURL(await response.blob());
+          if (!controls.current.speaking) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          const audio = new Audio(url);
+          audioRef.current = audio;
+          const done = () => {
+            URL.revokeObjectURL(url);
+            if (audioRef.current === audio) finishSpeaking();
+          };
+          audio.onended = done;
+          audio.onerror = done;
+          await audio.play();
+          return;
+        } catch {
+          grokVoiceFailedAt.current = Date.now();
+          audioRef.current = null;
+          if (!controls.current.speaking) return;
+        }
+      }
+      speakWithBrowser(spoken);
+    },
+    [finishSpeaking, speakWithBrowser, stopListening, stopSpeaking],
   );
 
   beginListeningRef.current = beginListening;
@@ -350,11 +443,11 @@ export function Assistant() {
         ...current,
         { role: "assistant", content: reply, turnos: data.admin ? data.turnos || [] : undefined },
       ]);
-      if (!data.admin) speak(reply);
+      void speak(data.admin ? agendaSpeech(reply, data.turnos || []) : reply);
     } catch {
       const reply = `No pude conectarme en este momento. Escríbenos por WhatsApp y te atendemos enseguida: ${whatsappUrl}`;
       setMessages((current) => [...current, { role: "assistant", content: reply }]);
-      speak(reply);
+      void speak(reply);
     } finally {
       controls.current.pending = false;
       setPending(false);
@@ -366,11 +459,10 @@ export function Assistant() {
 
   function closeAssistant() {
     controls.current.open = false;
-    controls.current.speaking = false;
     controls.current.wantMic = false;
     setOpen(false);
     stopListening();
-    if (canSpeak) window.speechSynthesis.cancel();
+    stopSpeaking();
     setListening(false);
   }
 
@@ -390,8 +482,7 @@ export function Assistant() {
 
   function toggleVoice() {
     if (voiceOn) {
-      controls.current.speaking = false;
-      if (canSpeak) window.speechSynthesis.cancel();
+      stopSpeaking();
       setVoiceOn(false);
       resumeMic();
       return;
