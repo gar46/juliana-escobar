@@ -1,5 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
-import { CalendarDays, Mic, MicOff, Send, Volume2, VolumeX, X } from "lucide-react";
+import { CalendarDays, Mic, MicOff, PhoneCall, Send, Volume2, VolumeX, X } from "lucide-react";
 import { whatsappUrl } from "../content";
 
 type Turno = {
@@ -56,7 +56,7 @@ const endpoint =
     : "https://juliana-asistente.juliana-escobar.workers.dev/api/assistant");
 
 const voiceEndpoint = endpoint.replace(/assistant$/, "voice");
-const SILENCE_MS = 2000;
+const SILENCE_MS = 2200;
 
 const ADMIN_PATTERN = /^\s*admin\s+\S+/i;
 const URL_PATTERN = /(https?:\/\/[^\s)]+)/g;
@@ -106,6 +106,39 @@ function formatDate(iso: string) {
     month: "long",
     timeZone: "UTC",
   }).format(new Date(`${iso}T00:00:00Z`));
+}
+
+function absorb(current: string, piece: string) {
+  const next = piece.replace(/\s+/g, " ").trim();
+  const base = current.replace(/\s+/g, " ").trim();
+  if (!next) return base;
+  if (!base) return next;
+  const left = base.toLowerCase();
+  const right = next.toLowerCase();
+  if (right.startsWith(left) || left.startsWith(right)) return right.length >= left.length ? next : base;
+  const limit = Math.min(left.length, right.length);
+  for (let size = limit; size >= 4; size -= 1) {
+    if (left.endsWith(right.slice(0, size))) return `${base}${next.slice(size)}`.replace(/\s+/g, " ").trim();
+  }
+  return `${base} ${next}`.trim();
+}
+
+function transcriptOf(results: ArrayLike<RecognitionResult>) {
+  let text = "";
+  for (let index = 0; index < results.length; index += 1) {
+    text = absorb(text, results[index][0]?.transcript || "");
+  }
+  return text;
+}
+
+function collapseStutter(text: string) {
+  let value = text.replace(/\s+/g, " ").trim();
+  let previous = "";
+  while (value !== previous) {
+    previous = value;
+    value = value.replace(/([\p{L}\d]+(?:\s+[\p{L}\d]+){0,6})\s+\1/giu, "$1");
+  }
+  return value;
 }
 
 function spokenHour(hora: string) {
@@ -186,6 +219,7 @@ export function Assistant() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const grokVoiceFailedAt = useRef(0);
   const heardRef = useRef("");
+  const carriedRef = useRef("");
   const silenceRef = useRef<number | undefined>(undefined);
   const controls = useRef({ open: false, pending: false, speaking: false, wantMic: true, voiceOn: true });
   const [open, setOpen] = useState(false);
@@ -201,16 +235,17 @@ export function Assistant() {
   controls.current.voiceOn = voiceOn;
 
   const beginListeningRef = useRef<() => void>(() => {});
-  const resumeMic = useCallback(() => {
+  const resumeMic = useCallback((delay = 400) => {
     window.setTimeout(() => {
       const state = controls.current;
       if (state.open && state.wantMic && !state.speaking && !state.pending) beginListeningRef.current();
-    }, 280);
+    }, delay);
   }, []);
 
   const stopListening = useCallback(() => {
     window.clearTimeout(silenceRef.current);
     heardRef.current = "";
+    carriedRef.current = "";
     sessionRef.current += 1;
     const recognition = recognitionRef.current;
     recognitionRef.current = null;
@@ -237,28 +272,24 @@ export function Assistant() {
     }
     const flush = () => {
       window.clearTimeout(silenceRef.current);
-      const spoken = heardRef.current.trim();
+      const spoken = collapseStutter(heardRef.current);
       heardRef.current = "";
+      carriedRef.current = "";
       if (!spoken || controls.current.pending) return false;
       setDraft("");
       stopListening();
       void sendRef.current(spoken);
       return true;
     };
+    const carried = carriedRef.current;
     const recognition = new Constructor();
     recognition.lang = "es-CO";
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     recognition.onresult = (event) => {
-      let interim = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const transcript = result[0]?.transcript || "";
-        if (result.isFinal) heardRef.current = `${heardRef.current} ${transcript}`.trim();
-        else interim += transcript;
-      }
-      setDraft(`${heardRef.current} ${interim}`.trim());
+      heardRef.current = absorb(carried, transcriptOf(event.results));
+      setDraft(heardRef.current);
       window.clearTimeout(silenceRef.current);
       silenceRef.current = window.setTimeout(() => {
         if (heardRef.current.trim()) flush();
@@ -272,8 +303,9 @@ export function Assistant() {
     };
     recognition.onend = () => {
       if (sessionRef.current !== session) return;
+      carriedRef.current = heardRef.current;
       setListening(false);
-      if (!flush()) resumeMic();
+      resumeMic(250);
     };
     recognitionRef.current = recognition;
     try {
@@ -294,7 +326,7 @@ export function Assistant() {
   const finishSpeaking = useCallback(() => {
     controls.current.speaking = false;
     audioRef.current = null;
-    resumeMic();
+    resumeMic(900);
   }, [resumeMic]);
 
   const speakWithBrowser = useCallback(
@@ -471,8 +503,10 @@ export function Assistant() {
   function openAssistant() {
     controls.current.open = true;
     controls.current.wantMic = true;
+    controls.current.voiceOn = true;
+    setVoiceOn(true);
     setOpen(true);
-    beginListening();
+    void speak(greeting.content);
   }
 
   function onSubmit(event: FormEvent) {
@@ -512,24 +546,11 @@ export function Assistant() {
           <header className="assistant__bar">
             <div>
               <p id={titleId}>Recepción</p>
-              <span>Faciales, masajes y días de spa</span>
+              <span>{listening ? "Te escucho" : pending ? "Un momento" : voiceOn ? "En llamada, alta voz" : "En llamada"}</span>
             </div>
-            <div className="assistant__tools">
-              {canSpeak && (
-                <button
-                  type="button"
-                  onClick={toggleVoice}
-                  aria-pressed={voiceOn}
-                  aria-label={voiceOn ? "Silenciar voz" : "Escuchar respuestas"}
-                  title={voiceOn ? "Silenciar voz" : "Escuchar respuestas"}
-                >
-                  {voiceOn ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
-                </button>
-              )}
-              <button type="button" onClick={closeAssistant} aria-label="Cerrar asistente">
-                <X aria-hidden="true" />
-              </button>
-            </div>
+            <button type="button" onClick={closeAssistant} aria-label="Colgar">
+              <X aria-hidden="true" />
+            </button>
           </header>
 
           <div className="assistant__log" ref={logRef} aria-live="polite">
@@ -570,24 +591,35 @@ export function Assistant() {
             </button>
           </div>
 
-          <form onSubmit={onSubmit}>
+          <div className="assistant__call">
+            <button
+              type="button"
+              className={voiceOn ? "is-on" : ""}
+              onClick={toggleVoice}
+              aria-pressed={voiceOn}
+            >
+              {voiceOn ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
+              Alta voz
+            </button>
             {canListen && (
               <button
                 type="button"
-                className={`assistant__mic ${listening ? "is-listening" : ""}`}
+                className={listening ? "is-on" : ""}
                 onClick={toggleListening}
                 aria-pressed={listening}
-                aria-label={listening ? "Detener dictado" : "Hablar"}
-                title={listening ? "Detener dictado" : "Hablar"}
               >
-                {listening ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
+                {listening ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                Micrófono
               </button>
             )}
+          </div>
+
+          <form onSubmit={onSubmit}>
             <input
               ref={inputRef}
               value={draft}
               maxLength={800}
-              placeholder={listening ? "Te escucho…" : "Escribe tu pregunta"}
+              placeholder={listening ? "Habla con calma, te escucho…" : "O escribe tu pregunta"}
               aria-label="Mensaje para el asistente"
               onChange={(event) => setDraft(event.target.value)}
             />
@@ -599,7 +631,8 @@ export function Assistant() {
       )}
       {!open && (
         <button className="float-assistant" type="button" onClick={openAssistant}>
-          Asistente
+          <PhoneCall aria-hidden="true" />
+          Hablar con recepción
         </button>
       )}
     </>
