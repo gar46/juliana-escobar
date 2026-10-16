@@ -1,0 +1,12 @@
+name = "juliana-asistente"
+main = "worker/index.js"
+compatibility_date = "2026-10-16"
+
+[vars]
+GROK_MODEL = "grok-3"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "juliana-turnos"
+database_id = "9a9f4f0d-a647-41c7-905b-0f0139b354f5"
+migrations_dir = "migrations"

@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS turnos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fecha TEXT NOT NULL,
+  hora TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  telefono TEXT NOT NULL,
+  servicio TEXT NOT NULL,
+  nota TEXT NOT NULL DEFAULT '',
+  creado TEXT NOT NULL,
+  UNIQUE (fecha, hora)
+);

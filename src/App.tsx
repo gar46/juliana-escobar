@@ -9,6 +9,7 @@ import { Marquee } from "./components/Marquee";
 import { ScrollProgress } from "./components/ScrollProgress";
 import { Services } from "./components/Services";
 import { Testimonials } from "./components/Testimonials";
+import { Assistant } from "./components/Assistant";
 import { WhatsAppButton } from "./components/WhatsAppButton";
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
         <Contact />
       </main>
       <Footer />
+      <Assistant />
       <WhatsAppButton />
     </>
   );
