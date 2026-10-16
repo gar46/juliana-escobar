@@ -25,17 +25,20 @@ type AssistantResponse = {
   turnos?: Turno[];
 };
 
-type RecognitionEvent = { results: ArrayLike<ArrayLike<{ transcript: string }>> };
+type RecognitionResult = { isFinal: boolean; 0: { transcript: string } };
+
+type RecognitionEvent = { resultIndex: number; results: ArrayLike<RecognitionResult> };
 
 type Recognition = {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
   start(): void;
   stop(): void;
   onresult: ((event: RecognitionEvent) => void) | null;
   onend: (() => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
 };
 
 type RecognitionConstructor = new () => Recognition;
@@ -64,14 +67,29 @@ function recognitionConstructor(): RecognitionConstructor | undefined {
   return speech.SpeechRecognition || speech.webkitSpeechRecognition;
 }
 
+function voiceScore(voice: SpeechSynthesisVoice) {
+  const lang = voice.lang.toLowerCase();
+  if (!lang.startsWith("es")) return -1;
+  const name = `${voice.name} ${voice.voiceURI}`.toLowerCase();
+  let score = lang === "es-co" ? 40 : lang === "es-mx" ? 32 : 18;
+  if (/natural|neural|online|premium|wavenet|studio/.test(name)) score += 80;
+  if (/google/.test(name)) score += 28;
+  if (/salome|dalia|paulina/.test(name)) score += 12;
+  if (voice.localService && /desktop|sabina|helena/.test(name) && !/natural|neural/.test(name)) score -= 25;
+  return score;
+}
+
 function pickVoice() {
-  const voices = window.speechSynthesis.getVoices();
-  const spanish = voices.filter((voice) => voice.lang.toLowerCase().startsWith("es"));
-  for (const lang of ["es-co", "es-mx", "es-us", "es-419", "es-es"]) {
-    const match = spanish.find((voice) => voice.lang.toLowerCase() === lang);
-    if (match) return match;
+  let best: SpeechSynthesisVoice | undefined;
+  let bestScore = -1;
+  for (const voice of window.speechSynthesis.getVoices()) {
+    const score = voiceScore(voice);
+    if (score > bestScore) {
+      best = voice;
+      bestScore = score;
+    }
   }
-  return spanish[0];
+  return best;
 }
 
 function speakable(text: string) {
@@ -139,29 +157,135 @@ export function Assistant() {
   const inputRef = useRef<HTMLInputElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<Recognition | null>(null);
+  const sessionRef = useRef(0);
+  const closeRef = useRef<() => void>(() => {});
+  const controls = useRef({ open: false, pending: false, speaking: false, wantMic: true, voiceOn: true });
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [listening, setListening] = useState(false);
-  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([greeting]);
   const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
   const canListen = Boolean(recognitionConstructor());
-  const hasAdmin = messages.some((message) => message.turnos);
+
+  controls.current.open = open;
+  controls.current.voiceOn = voiceOn;
+
+  const beginListeningRef = useRef<() => void>(() => {});
+  const resumeMic = useCallback(() => {
+    window.setTimeout(() => {
+      const state = controls.current;
+      if (state.open && state.wantMic && !state.speaking && !state.pending) beginListeningRef.current();
+    }, 280);
+  }, []);
+
+  const stopListening = useCallback(() => {
+    sessionRef.current += 1;
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+    try {
+      recognition?.stop();
+    } catch {
+      /* ya estaba detenido */
+    }
+    setListening(false);
+  }, []);
+
+  const beginListening = useCallback(() => {
+    const Constructor = recognitionConstructor();
+    const state = controls.current;
+    if (!Constructor || !state.open || !state.wantMic || state.speaking || state.pending) return;
+    sessionRef.current += 1;
+    const session = sessionRef.current;
+    const previous = recognitionRef.current;
+    recognitionRef.current = null;
+    try {
+      previous?.stop();
+    } catch {
+      /* ya estaba detenido */
+    }
+    const recognition = new Constructor();
+    recognition.lang = "es-CO";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (event) => {
+      let interim = "";
+      let finalText = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript || "";
+        if (result.isFinal) finalText += transcript;
+        else interim += transcript;
+      }
+      if (interim) setDraft(interim);
+      const spoken = finalText.trim();
+      if (!spoken || controls.current.pending) return;
+      setDraft("");
+      stopListening();
+      void sendRef.current(spoken);
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        controls.current.wantMic = false;
+        setListening(false);
+      }
+    };
+    recognition.onend = () => {
+      if (sessionRef.current !== session) return;
+      setListening(false);
+      resumeMic();
+    };
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      setListening(false);
+    }
+  }, [resumeMic, stopListening]);
 
   const speak = useCallback(
     (text: string) => {
-      if (!canSpeak || !voiceOn) return;
+      if (!canSpeak || !controls.current.voiceOn) return;
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(speakable(text));
+      controls.current.speaking = true;
+      stopListening();
       const voice = pickVoice();
-      if (voice) utterance.voice = voice;
-      utterance.lang = voice?.lang || "es-CO";
-      utterance.rate = 1;
-      window.speechSynthesis.speak(utterance);
+      const parts = speakable(text)
+        .split(/(?<=[.!?])\s+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      let index = 0;
+      const next = () => {
+        if (!controls.current.speaking || index >= parts.length) {
+          controls.current.speaking = false;
+          resumeMic();
+          return;
+        }
+        const utterance = new SpeechSynthesisUtterance(parts[index]);
+        index += 1;
+        if (voice) {
+          utterance.voice = voice;
+          utterance.lang = voice.lang;
+        } else {
+          utterance.lang = "es-CO";
+        }
+        utterance.rate = 0.93;
+        utterance.pitch = 1.03;
+        utterance.onend = next;
+        utterance.onerror = next;
+        window.speechSynthesis.speak(utterance);
+      };
+      next();
+      window.speechSynthesis.resume();
     },
-    [canSpeak, voiceOn],
+    [canSpeak, resumeMic, stopListening],
   );
+
+  beginListeningRef.current = beginListening;
+  const sendRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
     if (!canSpeak) return;
@@ -172,18 +296,18 @@ export function Assistant() {
   }, [canSpeak]);
 
   useEffect(() => {
-    if (!open) {
-      if (canSpeak) window.speechSynthesis.cancel();
-      recognitionRef.current?.stop();
-      return;
-    }
-    inputRef.current?.focus();
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") closeRef.current();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, canSpeak]);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   useEffect(() => {
     const log = logRef.current;
@@ -197,7 +321,9 @@ export function Assistant() {
 
   async function send(text: string) {
     const content = text.trim();
-    if (!content || pending) return;
+    if (!content || controls.current.pending) return;
+    controls.current.pending = true;
+    stopListening();
     const isPrivate = ADMIN_PATTERN.test(content);
     const userMessage: ChatMessage = { role: "user", content, private: isPrivate };
     const next = [...messages, userMessage];
@@ -230,8 +356,31 @@ export function Assistant() {
       setMessages((current) => [...current, { role: "assistant", content: reply }]);
       speak(reply);
     } finally {
+      controls.current.pending = false;
       setPending(false);
+      if (!controls.current.speaking) resumeMic();
     }
+  }
+
+  sendRef.current = send;
+
+  function closeAssistant() {
+    controls.current.open = false;
+    controls.current.speaking = false;
+    controls.current.wantMic = false;
+    setOpen(false);
+    stopListening();
+    if (canSpeak) window.speechSynthesis.cancel();
+    setListening(false);
+  }
+
+  closeRef.current = closeAssistant;
+
+  function openAssistant() {
+    controls.current.open = true;
+    controls.current.wantMic = true;
+    setOpen(true);
+    beginListening();
   }
 
   function onSubmit(event: FormEvent) {
@@ -240,40 +389,31 @@ export function Assistant() {
   }
 
   function toggleVoice() {
-    if (voiceOn && canSpeak) window.speechSynthesis.cancel();
-    setVoiceOn((value) => !value);
+    if (voiceOn) {
+      controls.current.speaking = false;
+      if (canSpeak) window.speechSynthesis.cancel();
+      setVoiceOn(false);
+      resumeMic();
+      return;
+    }
+    setVoiceOn(true);
   }
 
   function toggleListening() {
     if (listening) {
-      recognitionRef.current?.stop();
+      controls.current.wantMic = false;
+      stopListening();
       return;
     }
-    const Constructor = recognitionConstructor();
-    if (!Constructor) return;
-    const recognition = new Constructor();
-    recognition.lang = "es-CO";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript || "";
-      if (transcript) {
-        setVoiceOn(true);
-        void send(transcript);
-      }
-    };
-    recognition.onend = () => setListening(false);
-    recognition.onerror = () => setListening(false);
-    recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
+    controls.current.wantMic = true;
+    beginListening();
   }
 
   return (
     <>
       {open && (
         <section
-          className={`assistant ${hasAdmin ? "assistant--wide" : ""}`}
+          className="assistant"
           role="dialog"
           aria-modal="true"
           aria-labelledby={titleId}
@@ -295,7 +435,7 @@ export function Assistant() {
                   {voiceOn ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
                 </button>
               )}
-              <button type="button" onClick={() => setOpen(false)} aria-label="Cerrar asistente">
+              <button type="button" onClick={closeAssistant} aria-label="Cerrar asistente">
                 <X aria-hidden="true" />
               </button>
             </div>
@@ -337,9 +477,6 @@ export function Assistant() {
             <button type="button" onClick={() => void send("Quiero reservar un turno.")}>
               Reservar
             </button>
-            <a href={whatsappUrl} target="_blank" rel="noreferrer">
-              WhatsApp
-            </a>
           </div>
 
           <form onSubmit={onSubmit}>
@@ -369,14 +506,11 @@ export function Assistant() {
           </form>
         </section>
       )}
-      <button
-        className="float-assistant"
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        Asistente
-      </button>
+      {!open && (
+        <button className="float-assistant" type="button" onClick={openAssistant}>
+          Asistente
+        </button>
+      )}
     </>
   );
 }

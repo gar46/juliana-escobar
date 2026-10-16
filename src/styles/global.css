@@ -822,7 +822,7 @@ h3 {
 /* Pie */
 
 .footer {
-  padding: 2.5rem 0 10rem;
+  padding: 2.5rem 0 7rem;
   border-top: 1px solid rgba(232, 196, 182, 0.1);
   color: var(--muted);
 }
@@ -850,59 +850,37 @@ h3 {
 
 /* Botón flotante */
 
-.float-wa {
+.float-assistant {
   position: fixed;
   right: 1rem;
   bottom: calc(1rem + env(safe-area-inset-bottom));
   z-index: 25;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 3.25rem;
-  padding: 0.7rem 1.05rem;
+  min-height: 3.6rem;
+  padding: 0.85rem 1.35rem;
+  border: 0;
   border-radius: 999px;
   background: linear-gradient(180deg, #f3d68e, #d3ab55);
   color: #1a130a;
-  text-decoration: none;
-  font-weight: 500;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
-}
-
-.float-wa svg {
-  width: 1.2rem;
-  height: 1.2rem;
-}
-
-.float-assistant {
-  position: fixed;
-  right: 1rem;
-  bottom: calc(5rem + env(safe-area-inset-bottom));
-  z-index: 25;
-  min-height: 3.25rem;
-  padding: 0.7rem 1.05rem;
-  border: 1px solid rgba(232, 197, 107, 0.7);
-  border-radius: 999px;
-  background: rgba(6, 6, 6, 0.88);
-  color: var(--cream);
   font: inherit;
-  font-weight: 500;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 40px rgba(232, 197, 107, 0.28);
 }
 
 .assistant {
   position: fixed;
-  right: 1rem;
-  bottom: calc(9rem + env(safe-area-inset-bottom));
-  z-index: 26;
+  inset: 0;
+  z-index: 45;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
-  width: min(24rem, calc(100vw - 2rem));
-  height: min(34rem, calc(100svh - 11rem));
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
-  border: 1px solid var(--line);
-  background: #100e0c;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+  border: 0;
+  background: #090909;
 }
 
 .assistant__bar,
@@ -914,13 +892,16 @@ h3 {
 
 .assistant__bar {
   justify-content: space-between;
-  padding: 0.9rem 1rem;
+  width: min(46rem, 100%);
+  margin-inline: auto;
+  padding: calc(1rem + env(safe-area-inset-top)) 1.25rem 1rem;
   border-bottom: 1px solid var(--line);
 }
 
 .assistant__bar p {
   font-family: var(--serif);
-  font-size: 1.5rem;
+  font-size: clamp(2rem, 6vw, 2.8rem);
+  line-height: 1;
 }
 
 .assistant__bar span {
@@ -964,27 +945,30 @@ h3 {
   height: 1.1rem;
 }
 
-.assistant--wide {
-  width: min(30rem, calc(100vw - 2rem));
-}
-
 .assistant__log {
   position: relative;
   overflow-y: auto;
   overscroll-behavior: contain;
   display: grid;
   align-content: start;
-  gap: 0.6rem;
-  padding: 1rem;
+  gap: 0.85rem;
+  width: min(46rem, 100%);
+  margin-inline: auto;
+  padding: 1.25rem 1.25rem 1.5rem;
   scroll-padding-top: 0.75rem;
 }
 
 .assistant__msg {
-  max-width: 90%;
+  max-width: min(40rem, 92%);
   margin: 0;
-  padding: 0.75rem 0.85rem;
-  line-height: 1.5;
-  border-radius: 0.9rem;
+  padding: 1rem 1.1rem;
+  font-size: 1.08rem;
+  line-height: 1.55;
+  border-radius: 1rem;
+}
+
+.assistant__msg:has(.admin-list) {
+  max-width: min(46rem, 100%);
 }
 
 .assistant__msg p {
@@ -1101,7 +1085,9 @@ h3 {
 .assistant__ideas {
   display: flex;
   gap: 0.5rem;
-  padding: 0 1rem 0.7rem;
+  width: min(46rem, 100%);
+  margin-inline: auto;
+  padding: 0 1.25rem 0.85rem;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1121,19 +1107,22 @@ h3 {
 }
 
 .assistant form {
-  padding: 0.8rem;
+  width: min(46rem, 100%);
+  margin-inline: auto;
+  padding: 0.9rem 1.25rem calc(1rem + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
 }
 
 .assistant input {
   flex: 1;
   min-width: 0;
+  min-height: 2.75rem;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--cream);
   font: inherit;
-  font-size: 1rem;
+  font-size: 1.08rem;
 }
 
 .assistant form button {
@@ -1182,7 +1171,7 @@ h3 {
 
 @media (hover: hover) and (pointer: fine) {
   .button--gold:hover,
-  .float-wa:hover {
+  .float-assistant:hover {
     transform: translateY(-2px);
     box-shadow: 0 16px 40px rgba(232, 197, 107, 0.28);
   }

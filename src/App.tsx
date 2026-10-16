@@ -10,7 +10,6 @@ import { ScrollProgress } from "./components/ScrollProgress";
 import { Services } from "./components/Services";
 import { Testimonials } from "./components/Testimonials";
 import { Assistant } from "./components/Assistant";
-import { WhatsAppButton } from "./components/WhatsAppButton";
 
 export default function App() {
   return (
@@ -29,7 +28,6 @@ export default function App() {
       </main>
       <Footer />
       <Assistant />
-      <WhatsAppButton />
     </>
   );
 }

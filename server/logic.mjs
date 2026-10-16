@@ -6,7 +6,7 @@ const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const ADMIN_FAIL_LIMIT = 5;
 const ADMIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
-const ADMIN_PATTERN = /^\s*admin\s+(\S+)(?:\s+(\d{4}-\d{2}-\d{2}))?\s*$/i;
+const ADMIN_COMMAND = /^admin (\S+)(?: (\d{4}-\d{2}-\d{2}))?$/;
 
 const hits = new Map();
 const adminFails = new Map();
@@ -46,7 +46,7 @@ export async function handleAssistant(request, env) {
   }
 
   const last = messages[messages.length - 1];
-  const adminMatch = last.role === "user" ? last.content.match(ADMIN_PATTERN) : null;
+  const adminMatch = last.role === "user" ? adminCommand(last.content) : null;
   if (adminMatch) return adminTurnos(adminMatch, ip, origin, env);
 
   if (!env.GROK_API_KEY) {
@@ -54,7 +54,7 @@ export async function handleAssistant(request, env) {
   }
 
   try {
-    const history = messages.filter((item) => !ADMIN_PATTERN.test(item.content));
+    const history = messages.filter((item) => !adminCommand(item.content));
     const reply = await converse(history, env);
     return json({ reply }, 200, origin, env);
   } catch (error) {
@@ -75,9 +75,17 @@ async function adminTurnos(match, ip, origin, env) {
   if (adminBlocked(ip)) {
     return json({ error: "Demasiados intentos. Intenta de nuevo más tarde." }, 429, origin, env);
   }
-  if (!safeEqual(match[1], env.ADMIN_KEY)) {
+  if (!safeEqual(match[1], String(env.ADMIN_KEY).trim().toLowerCase())) {
     recordAdminFail(ip);
-    return json({ error: "La palabra clave no es correcta." }, 401, origin, env);
+    return json(
+      {
+        error:
+          "Esa palabra clave no coincide. Escríbela sola, en una línea: admin, un espacio y la clave, sin signos ni más texto.",
+      },
+      401,
+      origin,
+      env,
+    );
   }
   if (!env.DB) {
     return json({ error: "La agenda no está conectada." }, 503, origin, env);
@@ -102,6 +110,15 @@ async function adminTurnos(match, ip, origin, env) {
     origin,
     env,
   );
+}
+
+function adminCommand(content) {
+  const normalized = String(content)
+    .trim()
+    .toLowerCase()
+    .replace(/[.,;:!?¡¿"'“”]/g, "")
+    .replace(/\s+/g, " ");
+  return normalized.match(ADMIN_COMMAND);
 }
 
 function safeEqual(a, b) {
