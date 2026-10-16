@@ -2,23 +2,19 @@ const OPEN_HOUR = 9;
 const CLOSE_HOUR = 18;
 const OPEN_DAYS = new Set([1, 2, 3, 4, 5, 6]);
 const WINDOW_DAYS = 45;
-const RATE_LIMIT = 12;
+const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
+const ADMIN_FAIL_LIMIT = 5;
+const ADMIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_PATTERN = /^\s*admin\s+(\S+)(?:\s+(\d{4}-\d{2}-\d{2}))?\s*$/i;
 
 const hits = new Map();
+const adminFails = new Map();
 
 const STUDIO = {
   name: "Juliana Escobar",
   role: "cosmetóloga y esteticista",
-  phone: "316 496 1495",
   whatsapp: "https://wa.me/573164961495",
-  services: [
-    "Tratamientos faciales",
-    "Tratamientos corporales",
-    "Limpieza facial",
-    "Masajes de relajación",
-    "Días de SPA",
-  ],
 };
 
 export async function handleAssistant(request, env) {
@@ -32,16 +28,9 @@ export async function handleAssistant(request, env) {
   if (!allowedOrigin(origin, env)) {
     return json({ error: "Origen no permitido." }, 403, origin, env);
   }
-  if (!env.GROK_API_KEY) {
-    return json(
-      { error: "El asistente todavía no tiene configurada la conexión." },
-      503,
-      origin,
-      env,
-    );
-  }
-  if (limited(clientIp(request, env))) {
-    return json({ error: "Demasiados mensajes. Espera unos minutos." }, 429, origin, env);
+  const ip = clientIp(request, env);
+  if (limited(ip)) {
+    return json({ error: "Recibí muchos mensajes seguidos. Espera unos minutos, por favor." }, 429, origin, env);
   }
 
   let body;
@@ -53,28 +42,95 @@ export async function handleAssistant(request, env) {
 
   const messages = sanitize(body.messages);
   if (!messages.length) {
-    return json({ error: "Escribe una pregunta para continuar." }, 400, origin, env);
+    return json({ error: "Escribe tu pregunta para continuar." }, 400, origin, env);
+  }
+
+  const last = messages[messages.length - 1];
+  const adminMatch = last.role === "user" ? last.content.match(ADMIN_PATTERN) : null;
+  if (adminMatch) return adminTurnos(adminMatch, ip, origin, env);
+
+  if (!env.GROK_API_KEY) {
+    return json({ error: unavailableMessage() }, 503, origin, env);
   }
 
   try {
-    const reply = await converse(messages, env);
+    const history = messages.filter((item) => !ADMIN_PATTERN.test(item.content));
+    const reply = await converse(history, env);
     return json({ reply }, 200, origin, env);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
     console.error("assistant_error", message);
-    return json(
-      { error: "No pude responder ahora. Puedes escribir por WhatsApp al 316 496 1495." },
-      502,
-      origin,
-      env,
-    );
+    return json({ error: unavailableMessage() }, 502, origin, env);
   }
+}
+
+function unavailableMessage() {
+  return `En este momento no puedo responderte por aquí, pero Juliana te atiende con gusto por WhatsApp: ${STUDIO.whatsapp}`;
+}
+
+async function adminTurnos(match, ip, origin, env) {
+  if (!env.ADMIN_KEY) {
+    return json({ error: "El acceso de administración no está configurado." }, 503, origin, env);
+  }
+  if (adminBlocked(ip)) {
+    return json({ error: "Demasiados intentos. Intenta de nuevo más tarde." }, 429, origin, env);
+  }
+  if (!safeEqual(match[1], env.ADMIN_KEY)) {
+    recordAdminFail(ip);
+    return json({ error: "La palabra clave no es correcta." }, 401, origin, env);
+  }
+  if (!env.DB) {
+    return json({ error: "La agenda no está conectada." }, 503, origin, env);
+  }
+
+  const desde = match[2] || todayIso();
+  const result = await env.DB.prepare(
+    "SELECT fecha, hora, nombre, telefono, servicio, nota FROM turnos WHERE fecha >= ? ORDER BY fecha, hora LIMIT 300",
+  )
+    .bind(desde)
+    .all();
+  const turnos = result.results || [];
+  return json(
+    {
+      admin: true,
+      reply: turnos.length
+        ? `Hay ${turnos.length} ${turnos.length === 1 ? "turno" : "turnos"} desde el ${desde}.`
+        : `No hay turnos reservados desde el ${desde}.`,
+      turnos,
+    },
+    200,
+    origin,
+    env,
+  );
+}
+
+function safeEqual(a, b) {
+  const left = String(a);
+  const right = String(b);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    diff |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+function adminBlocked(ip) {
+  const now = Date.now();
+  const recent = (adminFails.get(ip) || []).filter((time) => now - time < ADMIN_FAIL_WINDOW_MS);
+  adminFails.set(ip, recent);
+  return recent.length >= ADMIN_FAIL_LIMIT;
+}
+
+function recordAdminFail(ip) {
+  const recent = adminFails.get(ip) || [];
+  recent.push(Date.now());
+  adminFails.set(ip, recent);
 }
 
 async function converse(history, env) {
   const messages = [{ role: "system", content: systemPrompt() }, ...history];
 
-  for (let step = 0; step < 4; step += 1) {
+  for (let step = 0; step < 5; step += 1) {
     const data = await grok(messages, env);
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("empty_reply");
@@ -91,7 +147,7 @@ async function converse(history, env) {
     }
   }
 
-  return "Puedo ayudarte con horarios y con un turno de una hora. ¿Qué día te queda bien?";
+  return "Con gusto te ayudo a encontrar un horario. ¿Qué día te queda mejor para tu cita?";
 }
 
 async function grok(messages, env) {
@@ -116,20 +172,62 @@ async function grok(messages, env) {
 }
 
 function systemPrompt() {
-  return [
-    `Eres el asistente de ${STUDIO.name}, ${STUDIO.role}, en su web.`,
-    "Respondes en español, con frases cortas y un tono cálido.",
-    "Ayudas con los servicios, los horarios y a reservar turnos de una hora.",
-    `Servicios: ${STUDIO.services.join(", ")}.`,
-    "La agenda es de lunes a sábado, de 9:00 a 18:00, hora de Bogotá. Cada turno ocupa una hora. El último turno empieza a las 17:00. El domingo no hay agenda.",
-    "No prometas resultados médicos ni digas que un tratamiento sirve para todas las pieles. La valoración va primero.",
-    "No inventes la dirección: se confirma al agendar.",
-    "Para consultar disponibilidad usa la herramienta consultar_agenda. Para reservar usa agendar_turno solo cuando tengas nombre, teléfono, servicio, fecha y hora.",
-    "Si una herramienta responde que la agenda no está conectada, no confirmes la reserva. Ofrece WhatsApp " +
-      STUDIO.phone +
-      ".",
-    "No pidas ni repitas claves, contraseñas ni datos de pago.",
-  ].join(" ");
+  return `Eres la recepcionista virtual de ${STUDIO.name} Estética Avanzada, un estudio de spa especializado en tratamientos faciales y corporales no invasivos. Juliana es ${STUDIO.role}.
+
+Hoy es ${todayLabel()} y son las ${nowHour()} en Bogotá (fecha ${todayIso()}).
+
+CÓMO ATIENDES
+- Eres una recepcionista profesional de spa: cálida, cercana, paciente y resolutiva. Tratas de "tú" y transmites calma.
+- Nunca respondas de forma seca. Reconoce lo que la persona pide, responde con claridad y cierra con una pregunta o un siguiente paso concreto.
+- Respuestas de 2 a 5 frases. Haz una sola pregunta a la vez.
+- Usa el nombre de la persona cuando lo sepas.
+- Escribe en texto plano, sin markdown, sin asteriscos ni viñetas con símbolos.
+
+ANTES DE RESPONDER, DECIDE SI PUEDES ATENDERLO
+Puedes atender:
+- Información sobre los servicios, cómo es cada experiencia y qué esperar.
+- Recomendaciones generales: llegar 10 minutos antes, venir con ropa cómoda, para faciales venir sin maquillaje si es posible, hidratarse después de un masaje.
+- Ayudar a elegir un servicio según lo que la persona busca (relajarse, cuidar la piel, desconectarse).
+- Revisar horarios disponibles y reservar turnos.
+Debes derivar con amabilidad a WhatsApp (${STUDIO.whatsapp}):
+- Precios, promociones, paquetes o formas de pago.
+- Cancelar o cambiar una cita ya reservada.
+- Embarazo, enfermedades, alergias, medicamentos, heridas o cualquier duda de salud o contraindicación.
+- Procedimientos invasivos (inyectables, rellenos, toxina botulínica, láser médico, cirugía): el estudio no los ofrece.
+- Quejas, temas personales o cualquier cosa de la que no estés segura.
+Cuando derives, explica brevemente el motivo, comparte el enlace completo de WhatsApp y ofrece seguir ayudando con lo que sí puedes.
+Nunca inventes precios, promociones, la dirección exacta, duraciones distintas a una hora ni resultados.
+
+SERVICIOS (todos no invasivos)
+- Tratamientos faciales: protocolos para la textura, luminosidad y confort de la piel; se eligen tras una valoración.
+- Tratamientos corporales: sesiones para el cuidado del cuerpo con un ritmo pausado.
+- Limpieza facial: limpieza profunda y cuidadosa adaptada al tipo de piel.
+- Masajes de relajación: manos firmes y ritmo lento para soltar la tensión.
+- Días de SPA: una experiencia más larga para desconectarse; se arma combinando rostro y cuerpo.
+
+AGENDA
+- Lunes a sábado de 9:00 a 18:00. Cada turno dura una hora; el último empieza a las 17:00. Domingo cerrado. Se agenda hasta 45 días adelante.
+- Para ver disponibilidad usa consultar_agenda con la fecha en formato YYYY-MM-DD. Convierte "mañana", "el sábado" o "la otra semana" usando la fecha de hoy.
+- Ofrece hasta 4 horarios libres y pregunta cuál prefiere.
+- Para reservar necesitas: servicio, fecha, hora, nombre y teléfono. Pídelos de forma natural, uno a la vez.
+- Antes de usar agendar_turno, resume los datos y pregunta si confirmas. Reserva solo después de un sí claro.
+- Al reservar, confirma servicio, fecha y hora con entusiasmo, y explica que la dirección y los detalles se confirman por WhatsApp.
+- Si una herramienta devuelve un error o dice que la agenda no está conectada, no confirmes la reserva y ofrece WhatsApp.
+
+SALUD Y PRIVACIDAD
+- No diagnostiques ni prometas resultados. La valoración con Juliana va primero.
+- No pidas datos de pago, documentos ni contraseñas.
+- No compartas información de turnos de otras personas.`;
+}
+
+function todayLabel() {
+  return new Intl.DateTimeFormat("es-CO", {
+    timeZone: "America/Bogota",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(new Date());
 }
 
 function toolSchema() {
@@ -152,7 +250,8 @@ function toolSchema() {
       type: "function",
       function: {
         name: "agendar_turno",
-        description: "Reserva un turno de una hora si el horario está libre.",
+        description:
+          "Reserva un turno de una hora si el horario está libre. Úsala solo después de que la persona confirme los datos.",
         parameters: {
           type: "object",
           properties: {
@@ -364,6 +463,10 @@ function cors(origin, env) {
 function json(payload, status, origin, env) {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "Content-Type": "application/json", ...cors(origin, env) },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      ...cors(origin, env),
+    },
   });
 }
