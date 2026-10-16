@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useMotionValueEvent, useScroll } from "motion/react";
 import { Menu, X } from "lucide-react";
-import { nav, site, whatsappUrl } from "../content";
+import { openAssistant } from "../assistantBus";
+import { nav, site } from "../content";
 
 export function Header() {
   const [open, setOpen] = useState(false);
@@ -40,9 +41,9 @@ export function Header() {
             </a>
           ))}
         </nav>
-        <a className="button button--gold header__cta" href={whatsappUrl}>
+        <button className="button button--gold header__cta" type="button" onClick={openAssistant}>
           Agendar
-        </a>
+        </button>
         <button
           className="menu-button"
           type="button"
@@ -77,9 +78,16 @@ export function Header() {
                   {item.label}
                 </motion.a>
               ))}
-              <a className="button button--gold" href={whatsappUrl} onClick={close}>
-                Agendar por WhatsApp
-              </a>
+              <button
+                className="button button--gold"
+                type="button"
+                onClick={() => {
+                  close();
+                  openAssistant();
+                }}
+              >
+                Agendar con recepción
+              </button>
             </nav>
             <p className="drawer__meta">
               {site.role}

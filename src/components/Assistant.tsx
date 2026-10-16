@@ -1,6 +1,7 @@
 import { FormEvent, Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
-import { CalendarDays, Mic, MicOff, PhoneCall, Send, Volume2, VolumeX, X } from "lucide-react";
-import { whatsappUrl } from "../content";
+import { CalendarDays, Mic, MicOff, Phone, PhoneCall, Send, Volume2, X } from "lucide-react";
+import { OPEN_ASSISTANT_EVENT } from "../assistantBus";
+import { site, whatsappUrl } from "../content";
 
 type Turno = {
   fecha: string;
@@ -11,11 +12,20 @@ type Turno = {
   nota?: string;
 };
 
+type Reserva = {
+  fecha: string;
+  hora: string;
+  servicio: string;
+  nombre: string;
+  telefono: string;
+};
+
 type ChatMessage = {
   role: "assistant" | "user";
   content: string;
   private?: boolean;
   turnos?: Turno[];
+  reserva?: Reserva;
 };
 
 type AssistantResponse = {
@@ -23,6 +33,7 @@ type AssistantResponse = {
   error?: string;
   admin?: boolean;
   turnos?: Turno[];
+  reserva?: Reserva;
 };
 
 type RecognitionResult = { isFinal: boolean; 0: { transcript: string } };
@@ -160,6 +171,52 @@ function agendaSpeech(reply: string, turnos: Turno[]) {
     return `El ${formatDate(fecha)}: ${list}.`;
   });
   return `${reply} ${days.join(" ")}`;
+}
+
+function confirmationText(reserva: Reserva) {
+  return [
+    `Confirmación de cita – ${site.name}`,
+    `Nombre: ${reserva.nombre}`,
+    `Servicio: ${reserva.servicio}`,
+    `Fecha: ${formatDate(reserva.fecha)}`,
+    `Hora: ${reserva.hora}`,
+    `WhatsApp: ${reserva.telefono}`,
+    "Duración: 1 hora. La dirección se confirma por este medio.",
+  ].join("\n");
+}
+
+function ReservaCard({ reserva }: { reserva: Reserva }) {
+  const text = encodeURIComponent(confirmationText(reserva));
+  const clientNumber = `57${reserva.telefono.replace(/\D/g, "")}`;
+  const studioNumber = whatsappUrl.replace(/\D/g, "");
+  return (
+    <div className="reserva-card">
+      <dl>
+        <div>
+          <dt>Servicio</dt>
+          <dd>{reserva.servicio}</dd>
+        </div>
+        <div>
+          <dt>Fecha</dt>
+          <dd>{formatDate(reserva.fecha)}</dd>
+        </div>
+        <div>
+          <dt>Hora</dt>
+          <dd>{reserva.hora}</dd>
+        </div>
+        <div>
+          <dt>WhatsApp</dt>
+          <dd>{reserva.telefono}</dd>
+        </div>
+      </dl>
+      <a className="reserva-card__primary" href={`https://wa.me/${clientNumber}?text=${text}`} target="_blank" rel="noreferrer">
+        Guardar confirmación en mi WhatsApp
+      </a>
+      <a href={`https://wa.me/${studioNumber}?text=${text}`} target="_blank" rel="noreferrer">
+        Avisar a Juliana por WhatsApp
+      </a>
+    </div>
+  );
 }
 
 function MessageText({ text }: { text: string }) {
@@ -357,6 +414,7 @@ export function Assistant() {
         }
         utterance.rate = 0.93;
         utterance.pitch = 1.03;
+        utterance.volume = controls.current.voiceOn ? 1 : 0.45;
         utterance.onend = next;
         utterance.onerror = next;
         window.speechSynthesis.speak(utterance);
@@ -369,7 +427,6 @@ export function Assistant() {
 
   const speak = useCallback(
     async (text: string) => {
-      if (!controls.current.voiceOn) return;
       stopSpeaking();
       controls.current.speaking = true;
       stopListening();
@@ -389,6 +446,7 @@ export function Assistant() {
             return;
           }
           const audio = new Audio(url);
+          audio.volume = controls.current.voiceOn ? 1 : 0.45;
           audioRef.current = audio;
           const done = () => {
             URL.revokeObjectURL(url);
@@ -473,7 +531,12 @@ export function Assistant() {
         `No pude responder ahora. Puedes escribirnos por WhatsApp: ${whatsappUrl}`;
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: reply, turnos: data.admin ? data.turnos || [] : undefined },
+        {
+          role: "assistant",
+          content: reply,
+          turnos: data.admin ? data.turnos || [] : undefined,
+          reserva: data.reserva,
+        },
       ]);
       void speak(data.admin ? agendaSpeech(reply, data.turnos || []) : reply);
     } catch {
@@ -501,13 +564,29 @@ export function Assistant() {
   closeRef.current = closeAssistant;
 
   function openAssistant() {
+    if (controls.current.open) return;
+    stopListening();
+    stopSpeaking();
     controls.current.open = true;
     controls.current.wantMic = true;
+    controls.current.pending = false;
     controls.current.voiceOn = true;
+    setMessages([greeting]);
+    setDraft("");
+    setPending(false);
     setVoiceOn(true);
     setOpen(true);
     void speak(greeting.content);
   }
+
+  const openRef = useRef(openAssistant);
+  openRef.current = openAssistant;
+
+  useEffect(() => {
+    const onOpen = () => openRef.current();
+    window.addEventListener(OPEN_ASSISTANT_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ASSISTANT_EVENT, onOpen);
+  }, []);
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -515,13 +594,14 @@ export function Assistant() {
   }
 
   function toggleVoice() {
-    if (voiceOn) {
-      stopSpeaking();
-      setVoiceOn(false);
-      resumeMic();
-      return;
-    }
-    setVoiceOn(true);
+    const speaker = !voiceOn;
+    controls.current.voiceOn = speaker;
+    setVoiceOn(speaker);
+    void speak(
+      speaker
+        ? "Listo, activé el altavoz. Ya puedes alejar el celular y seguimos conversando."
+        : "Perfecto, pasamos a modo llamada. Acerca el celular a tu oreja y háblame con normalidad, te escucho.",
+    );
   }
 
   function toggleListening() {
@@ -546,7 +626,15 @@ export function Assistant() {
           <header className="assistant__bar">
             <div>
               <p id={titleId}>Recepción</p>
-              <span>{listening ? "Te escucho" : pending ? "Un momento" : voiceOn ? "En llamada, alta voz" : "En llamada"}</span>
+              <span>
+                {listening
+                  ? "Te escucho"
+                  : pending
+                    ? "Un momento"
+                    : voiceOn
+                      ? "En llamada · altavoz"
+                      : "En llamada · acerca el celular a tu oreja"}
+              </span>
             </div>
             <button type="button" onClick={closeAssistant} aria-label="Colgar">
               <X aria-hidden="true" />
@@ -567,6 +655,7 @@ export function Assistant() {
                   </p>
                 )}
                 {message.turnos && message.turnos.length > 0 && <AdminList turnos={message.turnos} />}
+                {message.reserva && <ReservaCard reserva={message.reserva} />}
               </div>
             ))}
             {pending && (
@@ -598,8 +687,8 @@ export function Assistant() {
               onClick={toggleVoice}
               aria-pressed={voiceOn}
             >
-              {voiceOn ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
-              Alta voz
+              {voiceOn ? <Volume2 aria-hidden="true" /> : <Phone aria-hidden="true" />}
+              {voiceOn ? "Altavoz" : "Al oído"}
             </button>
             {canListen && (
               <button

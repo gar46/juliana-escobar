@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { motion, useReducedMotion, useScroll, useTransform } from "motion/react";
-import { site, whatsappUrl } from "../content";
+import { openAssistant } from "../assistantBus";
+import { site } from "../content";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { CinemaVideo } from "./CinemaVideo";
 
@@ -75,9 +76,9 @@ export function Hero() {
                 y días de spa en un estudio cálido y privado.
               </p>
               <div className="hero__actions">
-                <a className="button button--gold" href={whatsappUrl}>
-                  Reservar por WhatsApp
-                </a>
+                <button className="button button--gold" type="button" onClick={openAssistant}>
+                  Reservar con recepción
+                </button>
                 <a className="button button--ghost" href="#servicios">
                   Ver servicios
                 </a>

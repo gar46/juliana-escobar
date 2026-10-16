@@ -59,8 +59,8 @@ export async function handleAssistant(request, env) {
 
   try {
     const history = messages.filter((item) => !adminCommand(item.content));
-    const reply = await converse(history, env);
-    return json({ reply }, 200, origin, env);
+    const { reply, reserva } = await converse(history, env);
+    return json(reserva ? { reply, reserva } : { reply }, 200, origin, env);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
     console.error("assistant_error", message);
@@ -208,16 +208,18 @@ function recordAdminFail(ip) {
 
 async function converse(history, env) {
   const messages = [{ role: "system", content: systemPrompt() }, ...history];
+  let reserva;
 
   for (let step = 0; step < 5; step += 1) {
     const data = await grok(messages, env);
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("empty_reply");
     messages.push(message);
-    if (!message.tool_calls?.length) return String(message.content || "").trim();
+    if (!message.tool_calls?.length) return { reply: String(message.content || "").trim(), reserva };
 
     for (const call of message.tool_calls) {
       const result = await runTool(call, env);
+      if (result.reserva) reserva = result.reserva;
       messages.push({
         role: "tool",
         tool_call_id: call.id,
@@ -226,7 +228,12 @@ async function converse(history, env) {
     }
   }
 
-  return "Con gusto te ayudo a encontrar un horario. ¿Qué día te queda mejor para tu cita?";
+  return {
+    reply: reserva
+      ? "Tu cita quedó reservada. Puedes enviarte la confirmación a WhatsApp con el botón de abajo."
+      : "Con gusto te ayudo a encontrar un horario. ¿Qué día te queda mejor para tu cita?",
+    reserva,
+  };
 }
 
 async function grok(messages, env) {
@@ -290,9 +297,10 @@ AGENDA
 - Lunes a sábado de 9:00 a 18:00. Cada turno dura una hora; el último empieza a las 17:00. Domingo cerrado. Se agenda hasta 45 días adelante.
 - Para ver disponibilidad usa consultar_agenda con la fecha en formato YYYY-MM-DD. Convierte "mañana", "el sábado" o "la otra semana" usando la fecha de hoy.
 - Ofrece hasta 4 horarios libres y pregunta cuál prefiere.
-- Para reservar necesitas: servicio, fecha, hora, nombre y teléfono. Pídelos de forma natural, uno a la vez.
-- Antes de usar agendar_turno, resume los datos y pregunta si confirmas. Reserva solo después de un sí claro.
-- Al reservar, confirma servicio, fecha y hora con entusiasmo, y explica que la dirección y los detalles se confirman por WhatsApp.
+- Para reservar necesitas: servicio, fecha, hora, nombre y número de WhatsApp (celular colombiano de 10 dígitos que empieza por 3). Pídelos de forma natural, uno a la vez.
+- Cuando te den el WhatsApp, repítelo en grupos para confirmarlo, por ejemplo "trescientos dieciséis, cuatrocientos noventa y seis, catorce noventa y cinco", y pregunta si está bien. Si no tiene 10 dígitos, pídelo de nuevo con amabilidad.
+- Antes de usar agendar_turno, resume todo en una frase (servicio, día, hora, nombre y WhatsApp) y pregunta si confirmas. Reserva solo después de un sí claro.
+- Al reservar, confirma servicio, fecha y hora con entusiasmo y dile que debajo aparece un botón para enviarse la confirmación a su WhatsApp. La dirección y los detalles los confirma Juliana por WhatsApp.
 - Si una herramienta devuelve un error o dice que la agenda no está conectada, no confirmes la reserva y ofrece WhatsApp.
 
 SALUD Y PRIVACIDAD
@@ -385,10 +393,16 @@ async function agendarTurno(args, env) {
   const day = parseDate(args.fecha);
   const hora = normalizeHour(args.hora);
   const nombre = clean(args.nombre, 80);
-  const telefono = clean(args.telefono, 30);
+  const telefono = normalizePhone(args.telefono);
   const servicio = clean(args.servicio, 80);
-  if (!day || !hora || !nombre || !telefono || !servicio) {
-    return { ok: false, error: "Faltan fecha, hora, nombre, teléfono o servicio." };
+  if (!day || !hora || !nombre || !servicio) {
+    return { ok: false, error: "Faltan fecha, hora, nombre o servicio." };
+  }
+  if (!telefono) {
+    return {
+      ok: false,
+      error: "El WhatsApp debe ser un celular colombiano de 10 dígitos que empiece por 3. Pídelo de nuevo.",
+    };
   }
   const closed = closedReason(day);
   if (closed) return { ok: false, error: closed };
@@ -411,7 +425,14 @@ async function agendarTurno(args, env) {
     throw error;
   }
 
-  return { ok: true, fecha: day.iso, hora, servicio };
+  return { ok: true, reserva: { fecha: day.iso, hora, servicio, nombre, telefono } };
+}
+
+function normalizePhone(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("57")) digits = digits.slice(2);
+  if (!/^3\d{9}$/.test(digits)) return "";
+  return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
 }
 
 function agendaSinConexion(day) {

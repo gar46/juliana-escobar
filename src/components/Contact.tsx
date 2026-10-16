@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { motion, useReducedMotion, useScroll, useTransform } from "motion/react";
+import { openAssistant } from "../assistantBus";
 import { site, whatsappUrl } from "../content";
 import { Reveal } from "./Reveal";
 
@@ -19,11 +20,11 @@ export function Contact() {
           <h2 id="titulo-contacto">Agenda tu valoración.</h2>
           <p className="lede">
             Cuéntanos si buscas una limpieza, un tratamiento, un masaje o un día de spa.
-            Te respondemos con horarios y la dirección del estudio.
+            Nuestra recepcionista virtual te orienta, revisa horarios y reserva tu cita al momento.
           </p>
-          <a className="button button--gold" href={whatsappUrl}>
-            Escribir al {site.phoneDisplay}
-          </a>
+          <button className="button button--gold" type="button" onClick={openAssistant}>
+            Hablar con recepción
+          </button>
         </motion.div>
         <Reveal className="contact__card" delay={0.1}>
           <dl>
@@ -51,7 +52,7 @@ export function Contact() {
             </div>
             <div>
               <dt>Horario</dt>
-              <dd>Se confirma por WhatsApp al reservar.</dd>
+              <dd>Lunes a sábado, 9:00 a 18:00</dd>
             </div>
           </dl>
         </Reveal>
