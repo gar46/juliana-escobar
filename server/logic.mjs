@@ -59,7 +59,7 @@ export async function handleAssistant(request, env) {
 
   try {
     const history = messages.filter((item) => !adminCommand(item.content));
-    const { reply, reserva } = await converse(history, env);
+    const { reply, reserva } = await converse(history, env, body.voice === true);
     return json(reserva ? { reply, reserva } : { reply }, 200, origin, env);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
@@ -206,12 +206,15 @@ function recordAdminFail(ip) {
   adminFails.set(ip, recent);
 }
 
-async function converse(history, env) {
-  const messages = [{ role: "system", content: systemPrompt() }, ...history];
+async function converse(history, env, voice = false) {
+  const callMode = voice
+    ? "\n\nESTÁS EN UNA LLAMADA DE VOZ\nResponde en una o dos frases cortas, máximo 25 palabras, como por teléfono. Cierra con una sola pregunta breve. No menciones botones, pantallas ni enlaces."
+    : "";
+  const messages = [{ role: "system", content: systemPrompt() + callMode }, ...history];
   let reserva;
 
   for (let step = 0; step < 5; step += 1) {
-    const data = await grok(messages, env);
+    const data = await grok(messages, env, voice);
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("empty_reply");
     messages.push(message);
@@ -230,13 +233,15 @@ async function converse(history, env) {
 
   return {
     reply: reserva
-      ? "Tu cita quedó reservada. Puedes enviarte la confirmación a WhatsApp con el botón de abajo."
+      ? voice
+        ? "Listo, tu cita quedó reservada. ¿Quieres que te repita el día y la hora?"
+        : "Tu cita quedó reservada. Puedes enviarte la confirmación a WhatsApp con el botón de abajo."
       : "Con gusto te ayudo a encontrar un horario. ¿Qué día te queda mejor para tu cita?",
     reserva,
   };
 }
 
-async function grok(messages, env) {
+async function grok(messages, env, voice = false) {
   const response = await fetch("https://api.x.ai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -245,7 +250,8 @@ async function grok(messages, env) {
     },
     body: JSON.stringify({
       model: env.GROK_MODEL || "grok-3",
-      temperature: 0.4,
+      temperature: voice ? 0.2 : 0.4,
+      max_tokens: voice ? 320 : 500,
       messages,
       tools: toolSchema(),
     }),

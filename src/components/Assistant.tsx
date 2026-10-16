@@ -1,5 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
-import { CalendarDays, Mic, MicOff, Phone, PhoneCall, Send, Volume2, X } from "lucide-react";
+import { CalendarDays, PenLine, Phone, PhoneCall, Send, Volume2, X } from "lucide-react";
 import { OPEN_ASSISTANT_EVENT } from "../assistantBus";
 import { site, whatsappUrl } from "../content";
 
@@ -67,7 +67,9 @@ const endpoint =
     : "https://juliana-asistente.juliana-escobar.workers.dev/api/assistant");
 
 const voiceEndpoint = endpoint.replace(/assistant$/, "voice");
-const SILENCE_MS = 2200;
+const SILENCE_MS = 1100;
+
+type CallMode = "speaker" | "ear" | "write";
 
 const ADMIN_PATTERN = /^\s*admin\s+\S+/i;
 const URL_PATTERN = /(https?:\/\/[^\s)]+)/g;
@@ -278,18 +280,17 @@ export function Assistant() {
   const heardRef = useRef("");
   const carriedRef = useRef("");
   const silenceRef = useRef<number | undefined>(undefined);
-  const controls = useRef({ open: false, pending: false, speaking: false, wantMic: true, voiceOn: true });
+  const controls = useRef({ open: false, pending: false, speaking: false, wantMic: true, mode: "speaker" as CallMode });
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [listening, setListening] = useState(false);
-  const [voiceOn, setVoiceOn] = useState(true);
+  const [mode, setMode] = useState<CallMode>("speaker");
   const [messages, setMessages] = useState<ChatMessage[]>([greeting]);
   const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
-  const canListen = Boolean(recognitionConstructor());
 
   controls.current.open = open;
-  controls.current.voiceOn = voiceOn;
+  controls.current.mode = mode;
 
   const beginListeningRef = useRef<() => void>(() => {});
   const resumeMic = useCallback((delay = 400) => {
@@ -346,11 +347,11 @@ export function Assistant() {
     recognition.maxAlternatives = 1;
     recognition.onresult = (event) => {
       heardRef.current = absorb(carried, transcriptOf(event.results));
-      setDraft(heardRef.current);
+      if (controls.current.mode === "write") setDraft(heardRef.current);
       window.clearTimeout(silenceRef.current);
       silenceRef.current = window.setTimeout(() => {
         if (heardRef.current.trim()) flush();
-      }, SILENCE_MS);
+      }, controls.current.mode === "write" ? 2200 : SILENCE_MS);
     };
     recognition.onerror = (event) => {
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
@@ -383,7 +384,7 @@ export function Assistant() {
   const finishSpeaking = useCallback(() => {
     controls.current.speaking = false;
     audioRef.current = null;
-    resumeMic(900);
+    resumeMic(450);
   }, [resumeMic]);
 
   const speakWithBrowser = useCallback(
@@ -414,7 +415,7 @@ export function Assistant() {
         }
         utterance.rate = 0.93;
         utterance.pitch = 1.03;
-        utterance.volume = controls.current.voiceOn ? 1 : 0.45;
+        utterance.volume = controls.current.mode === "speaker" ? 1 : 0.45;
         utterance.onend = next;
         utterance.onerror = next;
         window.speechSynthesis.speak(utterance);
@@ -427,6 +428,7 @@ export function Assistant() {
 
   const speak = useCallback(
     async (text: string) => {
+      if (controls.current.mode === "write") return;
       stopSpeaking();
       controls.current.speaking = true;
       stopListening();
@@ -446,7 +448,7 @@ export function Assistant() {
             return;
           }
           const audio = new Audio(url);
-          audio.volume = controls.current.voiceOn ? 1 : 0.45;
+          audio.volume = controls.current.mode === "speaker" ? 1 : 0.45;
           audioRef.current = audio;
           const done = () => {
             URL.revokeObjectURL(url);
@@ -522,7 +524,10 @@ export function Assistant() {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: isPrivate ? [history[history.length - 1]] : history }),
+        body: JSON.stringify({
+          messages: isPrivate ? [history[history.length - 1]] : history,
+          voice: controls.current.mode !== "write" && !isPrivate,
+        }),
       });
       const data = (await response.json()) as AssistantResponse;
       const reply =
@@ -570,13 +575,13 @@ export function Assistant() {
     controls.current.open = true;
     controls.current.wantMic = true;
     controls.current.pending = false;
-    controls.current.voiceOn = true;
+    controls.current.mode = "speaker";
+    setMode("speaker");
     setMessages([greeting]);
     setDraft("");
     setPending(false);
-    setVoiceOn(true);
     setOpen(true);
-    void speak(greeting.content);
+    void speak("Hola, soy la recepción de Juliana Escobar. ¿Buscas un facial, un masaje o un día de spa?");
   }
 
   const openRef = useRef(openAssistant);
@@ -593,25 +598,19 @@ export function Assistant() {
     void send(draft);
   }
 
-  function toggleVoice() {
-    const speaker = !voiceOn;
-    controls.current.voiceOn = speaker;
-    setVoiceOn(speaker);
-    void speak(
-      speaker
-        ? "Listo, activé el altavoz. Ya puedes alejar el celular y seguimos conversando."
-        : "Perfecto, pasamos a modo llamada. Acerca el celular a tu oreja y háblame con normalidad, te escucho.",
-    );
-  }
-
-  function toggleListening() {
-    if (listening) {
+  function chooseMode(next: CallMode) {
+    if (next === mode) return;
+    controls.current.mode = next;
+    setMode(next);
+    if (next === "write") {
       controls.current.wantMic = false;
+      stopSpeaking();
       stopListening();
+      setDraft("");
       return;
     }
     controls.current.wantMic = true;
-    beginListening();
+    void speak(next === "ear" ? "Te escucho. Acerca el celular a tu oreja." : "Te escucho en altavoz.");
   }
 
   return (
@@ -627,13 +626,15 @@ export function Assistant() {
             <div>
               <p id={titleId}>Recepción</p>
               <span>
-                {listening
-                  ? "Te escucho"
-                  : pending
-                    ? "Un momento"
-                    : voiceOn
-                      ? "En llamada · altavoz"
-                      : "En llamada · acerca el celular a tu oreja"}
+                {mode === "write"
+                  ? "Por escrito"
+                  : listening
+                    ? "Te escucho"
+                    : pending
+                      ? "Un momento"
+                      : mode === "ear"
+                        ? "Al oído"
+                        : "Altavoz"}
               </span>
             </div>
             <button type="button" onClick={closeAssistant} aria-label="Colgar">
@@ -641,74 +642,95 @@ export function Assistant() {
             </button>
           </header>
 
-          <div className="assistant__log" ref={logRef} aria-live="polite">
-            {messages.map((message, index) => (
-              <div
-                key={`${message.role}-${index}`}
-                className={`assistant__msg assistant__msg--${message.role}`}
-              >
-                {message.private ? (
-                  <p>admin ••••••</p>
-                ) : (
-                  <p>
-                    <MessageText text={message.content} />
-                  </p>
-                )}
-                {message.turnos && message.turnos.length > 0 && <AdminList turnos={message.turnos} />}
-                {message.reserva && <ReservaCard reserva={message.reserva} />}
-              </div>
-            ))}
-            {pending && (
-              <div className="assistant__msg assistant__msg--assistant assistant__typing" aria-label="Escribiendo">
-                <span />
-                <span />
-                <span />
-              </div>
-            )}
-          </div>
+          {mode === "write" ? (
+            <div className="assistant__log" ref={logRef} aria-live="polite">
+              {messages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={`assistant__msg assistant__msg--${message.role}`}
+                >
+                  {message.private ? (
+                    <p>admin ••••••</p>
+                  ) : (
+                    <p>
+                      <MessageText text={message.content} />
+                    </p>
+                  )}
+                  {message.turnos && message.turnos.length > 0 && <AdminList turnos={message.turnos} />}
+                  {message.reserva && <ReservaCard reserva={message.reserva} />}
+                </div>
+              ))}
+              {pending && (
+                <div className="assistant__msg assistant__msg--assistant assistant__typing" aria-label="Escribiendo">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="assistant__live" aria-live="polite">
+              <p>{pending ? "Un momento" : listening ? "Te escucho" : "En llamada"}</p>
+              <span>
+                {mode === "ear"
+                  ? "Acerca el celular a tu oreja y habla con normalidad."
+                  : "Puedes dejar el celular sobre la mesa."}
+              </span>
+            </div>
+          )}
 
-          <div className="assistant__ideas">
-            <button type="button" onClick={() => void send("¿Qué servicios ofrecen?")}>
-              Servicios
-            </button>
-            <button type="button" onClick={() => void send("¿Qué horarios tienen disponibles mañana?")}>
-              <CalendarDays aria-hidden="true" />
-              Horarios
-            </button>
-            <button type="button" onClick={() => void send("Quiero reservar un turno.")}>
-              Reservar
-            </button>
-          </div>
+          {mode === "write" && (
+            <div className="assistant__ideas">
+              <button type="button" onClick={() => void send("¿Qué servicios ofrecen?")}>
+                Servicios
+              </button>
+              <button type="button" onClick={() => void send("¿Qué horarios tienen disponibles mañana?")}>
+                <CalendarDays aria-hidden="true" />
+                Horarios
+              </button>
+              <button type="button" onClick={() => void send("Quiero reservar un turno.")}>
+                Reservar
+              </button>
+            </div>
+          )}
 
           <div className="assistant__call">
             <button
               type="button"
-              className={voiceOn ? "is-on" : ""}
-              onClick={toggleVoice}
-              aria-pressed={voiceOn}
+              className={mode === "speaker" ? "is-on" : ""}
+              onClick={() => chooseMode("speaker")}
+              aria-pressed={mode === "speaker"}
             >
-              {voiceOn ? <Volume2 aria-hidden="true" /> : <Phone aria-hidden="true" />}
-              {voiceOn ? "Altavoz" : "Al oído"}
+              <Volume2 aria-hidden="true" />
+              Altavoz
             </button>
-            {canListen && (
-              <button
-                type="button"
-                className={listening ? "is-on" : ""}
-                onClick={toggleListening}
-                aria-pressed={listening}
-              >
-                {listening ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}
-                Micrófono
-              </button>
-            )}
+            <button
+              type="button"
+              className={mode === "ear" ? "is-on" : ""}
+              onClick={() => chooseMode("ear")}
+              aria-pressed={mode === "ear"}
+            >
+              <Phone aria-hidden="true" />
+              Al oído
+            </button>
+            <button
+              type="button"
+              className={mode === "write" ? "is-on" : ""}
+              onClick={() => chooseMode("write")}
+              aria-pressed={mode === "write"}
+            >
+              <PenLine aria-hidden="true" />
+              Escribir
+            </button>
           </div>
 
+          {mode === "write" && (
           <form onSubmit={onSubmit}>
             <input
               ref={inputRef}
               value={draft}
               maxLength={800}
-              placeholder={listening ? "Habla con calma, te escucho…" : "O escribe tu pregunta"}
+              placeholder="Escribe tu pregunta"
               aria-label="Mensaje para el asistente"
               onChange={(event) => setDraft(event.target.value)}
             />
@@ -716,6 +738,7 @@ export function Assistant() {
               <Send aria-hidden="true" />
             </button>
           </form>
+          )}
         </section>
       )}
       {!open && (
