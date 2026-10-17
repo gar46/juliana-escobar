@@ -48,7 +48,7 @@ export function assistantDevPlugin() {
     configureServer(server) {
       const route = (path, handler) =>
         server.middlewares.use(path, async (req, res) => {
-          if (req.method !== "POST" && req.method !== "OPTIONS") {
+          if (req.method !== "POST" && req.method !== "OPTIONS" && req.method !== "GET") {
             res.statusCode = 405;
             res.end("Método no permitido.");
             return;
@@ -61,11 +61,13 @@ export function assistantDevPlugin() {
             ASSISTANT_DEV: "1",
             DB: db,
           };
-          const request = new Request(`http://127.0.0.1${path}`, {
+          const query = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+          const request = new Request(`http://127.0.0.1${path}${query}`, {
             method: req.method,
             headers: {
               "content-type": req.headers["content-type"] || "application/json",
               origin: String(req.headers.origin || "http://127.0.0.1:5173"),
+              referer: String(req.headers.referer || ""),
               "x-client-ip": req.socket.remoteAddress || "local",
             },
             body: req.method === "POST" ? Buffer.concat(chunks) : undefined,

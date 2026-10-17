@@ -59,8 +59,8 @@ export async function handleAssistant(request, env) {
 
   try {
     const history = messages.filter((item) => !adminCommand(item.content));
-    const { reply, reserva } = await converse(history, env, body.voice === true);
-    return json(reserva ? { reply, reserva } : { reply }, 200, origin, env);
+    const { reply, reserva, hangup } = await converse(history, env, body.voice === true);
+    return json({ reply, ...(reserva && { reserva }), ...(hangup && { hangup: true }) }, 200, origin, env);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
     console.error("assistant_error", message);
@@ -69,11 +69,11 @@ export async function handleAssistant(request, env) {
 }
 
 export async function handleVoice(request, env) {
-  const origin = request.headers.get("origin") || "";
+  const origin = request.headers.get("origin") || refererOrigin(request);
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: cors(origin, env) });
   }
-  if (request.method !== "POST") {
+  if (request.method !== "POST" && request.method !== "GET") {
     return json({ error: "Método no permitido." }, 405, origin, env);
   }
   if (!allowedOrigin(origin, env)) {
@@ -86,13 +86,17 @@ export async function handleVoice(request, env) {
     return json({ error: "Demasiadas solicitudes de voz." }, 429, origin, env);
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "No pude leer el texto." }, 400, origin, env);
+  let raw;
+  if (request.method === "GET") {
+    raw = new URL(request.url).searchParams.get("text");
+  } else {
+    try {
+      raw = (await request.json()).text;
+    } catch {
+      return json({ error: "No pude leer el texto." }, 400, origin, env);
+    }
   }
-  const text = clean(body.text, VOICE_MAX_CHARS);
+  const text = clean(raw, VOICE_MAX_CHARS);
   if (!text) return json({ error: "Texto vacío." }, 400, origin, env);
 
   try {
@@ -118,11 +122,23 @@ export async function handleVoice(request, env) {
     }
     return new Response(response.body, {
       status: 200,
-      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", ...cors(origin, env) },
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": request.method === "GET" ? "private, max-age=86400" : "no-store",
+        ...cors(origin, env),
+      },
     });
   } catch (error) {
     console.error("voice_error", error instanceof Error ? error.message : "unknown");
     return json({ error: "La voz no está disponible." }, 502, origin, env);
+  }
+}
+
+function refererOrigin(request) {
+  try {
+    return new URL(request.headers.get("referer") || "").origin;
+  } catch {
+    return "";
   }
 }
 
@@ -218,7 +234,11 @@ async function converse(history, env, voice = false) {
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("empty_reply");
     messages.push(message);
-    if (!message.tool_calls?.length) return { reply: String(message.content || "").trim(), reserva };
+    if (!message.tool_calls?.length) {
+      const raw = String(message.content || "");
+      const hangup = raw.includes("[COLGAR]");
+      return { reply: raw.replace(/\[COLGAR\]/g, "").trim(), reserva, hangup };
+    }
 
     for (const call of message.tool_calls) {
       const result = await runTool(call, env);
@@ -242,31 +262,41 @@ async function converse(history, env, voice = false) {
 }
 
 async function grok(messages, env, voice = false) {
-  const response = await fetch("https://api.x.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.GROK_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: env.GROK_MODEL || "grok-3",
-      temperature: voice ? 0.2 : 0.4,
-      max_tokens: voice ? 320 : 500,
-      messages,
-      tools: toolSchema(),
-    }),
-  });
-  if (!response.ok) {
+  const primary = env.GROK_MODEL || "grok-3";
+  const fallback = env.GROK_FALLBACK_MODEL || (primary === "grok-3" ? "grok-4.3" : "grok-3");
+  let lastError;
+  for (const model of [primary, fallback]) {
+    const response = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: voice ? 0.2 : 0.4,
+        max_tokens: voice ? 320 : 500,
+        messages,
+        tools: toolSchema(),
+      }),
+    });
+    if (response.ok) return response.json();
     const detail = await response.text();
-    throw new Error(`grok_${response.status}:${detail.slice(0, 160)}`);
+    lastError = new Error(`grok_${response.status}:${detail.slice(0, 160)}`);
+    if (response.status !== 429 && response.status < 500) break;
+    console.error("grok_retry", model, response.status);
   }
-  return response.json();
+  throw lastError;
 }
 
 function systemPrompt() {
-  return `Eres la recepcionista virtual de ${STUDIO.name} Estética Avanzada, un estudio de spa especializado en tratamientos faciales y corporales no invasivos. Juliana es ${STUDIO.role}.
+  return `${STATIC_PROMPT}
 
-Hoy es ${todayLabel()} y son las ${nowHour()} en Bogotá (fecha ${todayIso()}).
+FECHA ACTUAL
+Hoy es ${todayLabel()} y son las ${nowHour()} en Bogotá (fecha ${todayIso()}).`;
+}
+
+const STATIC_PROMPT = `Eres la recepcionista virtual de ${STUDIO.name} Estética Avanzada, un estudio de spa especializado en tratamientos faciales y corporales no invasivos. Juliana es ${STUDIO.role}.
 
 CÓMO ATIENDES
 - Eres una recepcionista profesional de spa: cálida, cercana, paciente y resolutiva. Tratas de "tú" y transmites calma.
@@ -312,8 +342,11 @@ AGENDA
 SALUD Y PRIVACIDAD
 - No diagnostiques ni prometas resultados. La valoración con Juliana va primero.
 - No pidas datos de pago, documentos ni contraseñas.
-- No compartas información de turnos de otras personas.`;
-}
+- No compartas información de turnos de otras personas.
+
+CIERRE DE LA CONVERSACIÓN
+- Pregunta "¿te ayudo con algo más?" como máximo una vez en toda la conversación, y solo cuando ya resolviste lo que pidió.
+- Si la persona dice que no, que eso es todo, gracias, chao o se despide, responde con una sola frase de despedida cálida (por ejemplo "Con gusto, te esperamos en el spa. Que tengas un lindo día.") y termina exactamente con [COLGAR]. No hagas más preguntas ni ofrezcas nada más.`;
 
 function todayLabel() {
   return new Intl.DateTimeFormat("es-CO", {
