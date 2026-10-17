@@ -61,6 +61,11 @@ export async function handleAssistant(request, env) {
     return json({ error: unavailableMessage() }, 503, origin, env);
   }
 
+  if (last.role === "user") {
+    const comfort = comfortReply(last.content);
+    if (comfort) return json({ reply: comfort }, 200, origin, env);
+  }
+
   try {
     const history = messages.filter((item) => !adminCommand(item.content));
     const { reply, reserva, hangup } = await converse(history, env, body.voice === true);
@@ -318,25 +323,31 @@ async function grok(messages, env, voice = false) {
   const fallback = env.GROK_FALLBACK_MODEL || (primary === "grok-3" ? "grok-4.3" : "grok-3");
   let lastError;
   for (const model of [primary, fallback]) {
-    const response = await fetch("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.GROK_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: voice ? 0.2 : 0.4,
-        max_tokens: voice ? 320 : 500,
-        messages,
-        tools: toolSchema(),
-      }),
-    });
-    if (response.ok) return response.json();
-    const detail = await response.text();
-    lastError = new Error(`grok_${response.status}:${detail.slice(0, 160)}`);
-    if (response.status !== 429 && response.status < 500) break;
-    console.error("grok_retry", model, response.status);
+    try {
+      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.GROK_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: voice ? 0.2 : 0.4,
+          max_tokens: voice ? 320 : 500,
+          messages,
+          tools: toolSchema(),
+        }),
+        signal: AbortSignal.timeout(16000),
+      });
+      if (response.ok) return response.json();
+      const detail = await response.text();
+      lastError = new Error(`grok_${response.status}:${detail.slice(0, 160)}`);
+      if (response.status !== 429 && response.status < 500) break;
+      console.error("grok_retry", model, response.status);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("grok_timeout");
+      console.error("grok_retry", model, lastError.message);
+    }
   }
   throw lastError;
 }
@@ -396,12 +407,29 @@ AGENDA
 
 SALUD Y PRIVACIDAD
 - No diagnostiques ni prometas resultados. La valoración con Juliana va primero.
+- Si preguntan si duele, si es doloroso o si molesta, responde de una vez y sin herramientas: se siente como una presión suave, no es un dolor fuerte. No lo trates como contraindicación ni lo dejes en silencio. Solo deriva a WhatsApp si mencionan embarazo, enfermedad, alergia, medicamento o una herida.
 - No pidas datos de pago, documentos ni contraseñas.
 - No compartas información de turnos de otras personas.
 
 CIERRE DE LA CONVERSACIÓN
 - Pregunta "¿te ayudo con algo más?" como máximo una vez en toda la conversación, y solo cuando ya resolviste lo que pidió.
 - Si la persona dice que no, que eso es todo, gracias, chao o se despide, responde con una sola frase de despedida cálida (por ejemplo "Con gusto, te esperamos en el spa. Que tengas un lindo día.") y termina exactamente con [COLGAR]. No hagas más preguntas ni ofrezcas nada más.`;
+
+function comfortReply(text) {
+  const said = String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!said || said.length > 90) return "";
+  if (!/\b(duele|dolia|doler|dolor|doloroso|lastima|molesta)\b/.test(said)) return "";
+  if (/\b(reserv|agenda|cita|hora|manana|lunes|martes|miercoles|jueves|viernes|sabado|nombre|telefono|whatsapp)\b/.test(said)) {
+    return "";
+  }
+  return "No duele: se siente como una presión suave. Si tienes alguna condición de salud, Juliana la revisa contigo antes. ¿Quieres que te reserve un turno?";
+}
 
 function todayLabel() {
   return new Intl.DateTimeFormat("es-CO", {

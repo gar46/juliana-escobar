@@ -72,7 +72,7 @@ const voiceEndpoint = endpoint.replace(/assistant$/, "voice");
 const transcribeEndpoint = endpoint.replace(/assistant$/, "transcribe");
 const SILENCE_MS = 1100;
 const FILLER_DELAY_MS = 1300;
-const FILLERS = ["Un momento, ya te digo.", "Déjame revisar.", "Claro, un segundo."];
+const FILLERS = ["Un momento, ya te digo.", "Déjame revisar.", "Dame un segundo, por favor."];
 const FAREWELL = "Con gusto, te esperamos en el spa. Que tengas un lindo día.";
 
 function voiceUrl(text: string) {
@@ -98,6 +98,19 @@ function isGoodbye(text: string, lastAssistant: string) {
   const said = normalized(text);
   if (GOODBYE.test(said)) return true;
   return DECLINE.test(said) && /algo mas|otra cosa|ayudarte en algo|ayudo con algo/.test(normalized(lastAssistant));
+}
+
+const COMFORT_REPLY =
+  "No duele: se siente como una presión suave. Si tienes alguna condición de salud, Juliana la revisa contigo antes. ¿Quieres que te reserve un turno?";
+
+function comfortReply(text: string) {
+  const said = normalized(text);
+  if (!said || said.length > 90) return "";
+  if (!/\b(duele|dolia|doler|dolor|doloroso|lastima|molesta)\b/.test(said)) return "";
+  if (/\b(reserv|agenda|cita|hora|manana|lunes|martes|miercoles|jueves|viernes|sabado|nombre|telefono|whatsapp)\b/.test(said)) {
+    return "";
+  }
+  return COMFORT_REPLY;
 }
 
 type CallMode = "speaker" | "ear" | "write";
@@ -624,6 +637,13 @@ export function Assistant() {
       return;
     }
 
+    const comfort = !isPrivate ? comfortReply(content) : "";
+    if (comfort) {
+      setMessages([...next, { role: "assistant", content: comfort }]);
+      speak(comfort);
+      return;
+    }
+
     controls.current.pending = true;
     setMessages(next);
     setPending(true);
@@ -641,6 +661,7 @@ export function Assistant() {
           messages: isPrivate ? [history[history.length - 1]] : history,
           voice: controls.current.mode !== "write" && !isPrivate,
         }),
+        signal: AbortSignal.timeout(25000),
       });
       const data = (await response.json()) as AssistantResponse;
       const reply =
