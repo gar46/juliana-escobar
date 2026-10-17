@@ -25,6 +25,7 @@
 html {
   scroll-behavior: smooth;
   background: var(--black);
+  overflow-x: clip;
 }
 
 body {
@@ -35,7 +36,6 @@ body {
   font-size: 1.02rem;
   font-weight: 300;
   line-height: 1.65;
-  overflow-x: clip;
 }
 
 body.menu-open {
@@ -901,16 +901,13 @@ h3 {
   left: 1rem;
   right: 1rem;
   bottom: max(1rem, calc(0.75rem + env(safe-area-inset-bottom)));
-  z-index: 25;
+  z-index: 35;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.7rem;
   min-height: 3.6rem;
   padding: 0.8rem 1.4rem;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform;
   border: 0;
   border-radius: 999px;
   background: linear-gradient(180deg, #f3d68e, #d3ab55);
