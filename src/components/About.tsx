@@ -17,11 +17,11 @@ export function About() {
         <Reveal className="about__media" y={20}>
           <figure>
             <img
-              src="/brand/juliana.png"
+              src="/brand/juliana.jpg"
               alt="Juliana Escobar, cosmetóloga, en su estudio con uniforme café."
               loading="lazy"
-              width={389}
-              height={520}
+              width={765}
+              height={1024}
             />
           </figure>
         </Reveal>
