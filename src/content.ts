@@ -15,6 +15,7 @@ export const whatsappUrl = `https://wa.me/${site.phoneE164}?text=${encodeURIComp
 )}`;
 
 export const nav = [
+  { href: "#sobre-mi", label: "Sobre mí" },
   { href: "#servicios", label: "Servicios" },
   { href: "#experiencia", label: "El estudio" },
   { href: "#testimonios", label: "Experiencias" },

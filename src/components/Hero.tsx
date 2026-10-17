@@ -5,7 +5,7 @@ import { site } from "../content";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { CinemaVideo } from "./CinemaVideo";
 
-const titleLines = ["Cuidado facial", "y corporal,", "con tiempo", "de verdad."];
+const titleLines = ["Cuidado facial", "y corporal,", "con resultados", "visibles."];
 
 export function Hero() {
   const ref = useRef<HTMLElement>(null);

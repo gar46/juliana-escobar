@@ -1,3 +1,4 @@
+import { About } from "./components/About";
 import { Benefits } from "./components/Benefits";
 import { Contact } from "./components/Contact";
 import { Experience } from "./components/Experience";
@@ -19,6 +20,7 @@ export default function App() {
       <main id="contenido">
         <Hero />
         <Marquee />
+        <About />
         <Services />
         <Benefits />
         <Experience />
