@@ -23,7 +23,7 @@ export function Contact() {
             Nuestra recepcionista virtual te orienta, revisa horarios y reserva tu cita al momento.
           </p>
           <button className="button button--gold" type="button" onClick={openAssistant}>
-            Hablar con recepción
+            Hablar con Asesor
           </button>
         </motion.div>
         <Reveal className="contact__card" delay={0.1}>

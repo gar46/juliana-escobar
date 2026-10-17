@@ -25,7 +25,6 @@
 html {
   scroll-behavior: smooth;
   background: var(--black);
-  overflow-x: clip;
 }
 
 body {
@@ -868,7 +867,7 @@ h3 {
 /* Pie */
 
 .footer {
-  padding: 2.5rem 0 8.5rem;
+  padding: 2.5rem 0 11rem;
   border-top: 1px solid rgba(232, 196, 182, 0.1);
   color: var(--muted);
 }
@@ -900,8 +899,9 @@ h3 {
   position: fixed;
   left: 1rem;
   right: 1rem;
-  bottom: max(1rem, calc(0.75rem + env(safe-area-inset-bottom)));
-  z-index: 35;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  bottom: calc(100lvh - 100svh + 1rem + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;

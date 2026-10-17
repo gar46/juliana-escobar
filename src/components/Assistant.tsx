@@ -596,34 +596,6 @@ export function Assistant() {
     return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
   }, [canSpeak]);
 
-  const floatRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const button = floatRef.current;
-    const viewport = window.visualViewport;
-    if (!button || !viewport) return;
-
-    let frame = 0;
-    const pin = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const hiddenBelow = Math.max(0, window.innerHeight - viewport.offsetTop - viewport.height);
-        button.style.bottom = `calc(${Math.round(hiddenBelow)}px + max(1rem, env(safe-area-inset-bottom)))`;
-      });
-    };
-
-    pin();
-    viewport.addEventListener("resize", pin);
-    viewport.addEventListener("scroll", pin);
-    window.addEventListener("scroll", pin, { passive: true });
-    return () => {
-      cancelAnimationFrame(frame);
-      viewport.removeEventListener("resize", pin);
-      viewport.removeEventListener("scroll", pin);
-      window.removeEventListener("scroll", pin);
-    };
-  }, [open]);
-
   useEffect(() => {
     if (!open) return;
     const previousOverflow = document.body.style.overflow;
@@ -957,9 +929,9 @@ export function Assistant() {
         </section>
       )}
       {!open && (
-        <button ref={floatRef} className="float-assistant" type="button" onClick={openAssistant}>
+        <button className="float-assistant" type="button" onClick={openAssistant}>
           <PhoneCall aria-hidden="true" />
-          Hablar con recepción
+          Hablar con Asesor
         </button>
       )}
     </>
