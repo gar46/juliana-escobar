@@ -2,6 +2,7 @@ import { FormEvent, Fragment, useCallback, useEffect, useId, useRef, useState } 
 import { CalendarDays, PenLine, Phone, PhoneCall, Send, Volume2, X } from "lucide-react";
 import { OPEN_ASSISTANT_EVENT } from "../assistantBus";
 import { site, whatsappUrl } from "../content";
+import { canCapture, startCapture, type VoiceCapture } from "../voiceCapture";
 
 type Turno = {
   fecha: string;
@@ -68,6 +69,7 @@ const endpoint =
     : "https://juliana-asistente.juliana-escobar.workers.dev/api/assistant");
 
 const voiceEndpoint = endpoint.replace(/assistant$/, "voice");
+const transcribeEndpoint = endpoint.replace(/assistant$/, "transcribe");
 const SILENCE_MS = 1100;
 const FILLER_DELAY_MS = 1300;
 const FILLERS = ["Un momento, ya te digo.", "Déjame revisar.", "Claro, un segundo."];
@@ -89,7 +91,8 @@ function normalized(text: string) {
 
 const GOODBYE =
   /^(no )?(muchas )?(gracias )?(eso es todo|eso seria todo|nada mas|chao|chau|adios|hasta luego|hasta pronto|bye|nos vemos)( gracias| muchas gracias| chao| adios)*$/;
-const DECLINE = /^(no|no gracias|no muchas gracias|no senora|no senorita|gracias|muchas gracias|no por ahora|por ahora no)$/;
+const DECLINE =
+  /^(no|nada|no nada|no gracias|no muchas gracias|no senora|no senorita|gracias|muchas gracias|no por ahora|por ahora no|ya no|no ya|asi esta bien|no asi esta bien|todo bien|estoy bien|no estoy bien|no estoy bien gracias|no eso es todo)( gracias| muchas gracias)?$/;
 
 function isGoodbye(text: string, lastAssistant: string) {
   const said = normalized(text);
@@ -147,6 +150,12 @@ function formatDate(iso: string) {
     month: "long",
     timeZone: "UTC",
   }).format(new Date(`${iso}T00:00:00Z`));
+}
+
+function hour12(hora: string) {
+  const hour = Number(hora.slice(0, 2));
+  if (Number.isNaN(hour)) return hora;
+  return `${hour % 12 || 12}:00 ${hour < 12 ? "am" : "pm"}`;
 }
 
 function absorb(current: string, piece: string) {
@@ -209,7 +218,7 @@ function confirmationText(reserva: Reserva) {
     `Nombre: ${reserva.nombre}`,
     `Servicio: ${reserva.servicio}`,
     `Fecha: ${formatDate(reserva.fecha)}`,
-    `Hora: ${reserva.hora}`,
+    `Hora: ${hour12(reserva.hora)}`,
     `WhatsApp: ${reserva.telefono}`,
     "Duración: 1 hora. La dirección se confirma por este medio.",
   ].join("\n");
@@ -232,7 +241,7 @@ function ReservaCard({ reserva }: { reserva: Reserva }) {
         </div>
         <div>
           <dt>Hora</dt>
-          <dd>{reserva.hora}</dd>
+          <dd>{hour12(reserva.hora)}</dd>
         </div>
         <div>
           <dt>WhatsApp</dt>
@@ -280,7 +289,7 @@ function AdminList({ turnos }: { turnos: Turno[] }) {
           <ul>
             {items.map((turno) => (
               <li key={`${turno.fecha}-${turno.hora}`}>
-                <strong>{turno.hora}</strong>
+                <strong>{hour12(turno.hora)}</strong>
                 <div>
                   <p>{turno.nombre}</p>
                   <span>{turno.servicio}</span>
@@ -307,6 +316,9 @@ export function Assistant() {
   const fillerRef = useRef<HTMLAudioElement | null>(null);
   const fillerTimerRef = useRef<number | undefined>(undefined);
   const hangupRef = useRef(false);
+  const captureRef = useRef<VoiceCapture | null>(null);
+  const startingRef = useRef(false);
+  const utteranceRef = useRef<(wav: Blob) => Promise<void>>(async () => {});
   const grokVoiceFailedAt = useRef(0);
   const heardRef = useRef("");
   const carriedRef = useRef("");
@@ -319,6 +331,7 @@ export function Assistant() {
   const [mode, setMode] = useState<CallMode>("speaker");
   const [messages, setMessages] = useState<ChatMessage[]>([greeting]);
   const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
+  const lastReserva = [...messages].reverse().find((message) => message.reserva)?.reserva;
 
   controls.current.open = open;
   controls.current.mode = mode;
@@ -331,7 +344,37 @@ export function Assistant() {
     }, delay);
   }, []);
 
+  const releaseCapture = useCallback(() => {
+    captureRef.current?.stop();
+    captureRef.current = null;
+  }, []);
+
+  const ensureCapture = useCallback(() => {
+    if (!canCapture() || captureRef.current || startingRef.current) return;
+    startingRef.current = true;
+    startCapture({ onUtterance: (wav) => void utteranceRef.current(wav) })
+      .then((capture) => {
+        startingRef.current = false;
+        const state = controls.current;
+        if (!state.open || state.mode === "write") {
+          capture.stop();
+          return;
+        }
+        captureRef.current = capture;
+        if (state.wantMic && !state.speaking && !state.pending) {
+          capture.resume();
+          setListening(true);
+        }
+      })
+      .catch(() => {
+        startingRef.current = false;
+        controls.current.wantMic = false;
+        setListening(false);
+      });
+  }, []);
+
   const stopListening = useCallback(() => {
+    captureRef.current?.pause();
     window.clearTimeout(silenceRef.current);
     heardRef.current = "";
     carriedRef.current = "";
@@ -347,9 +390,19 @@ export function Assistant() {
   }, []);
 
   const beginListening = useCallback(() => {
-    const Constructor = recognitionConstructor();
     const state = controls.current;
-    if (!Constructor || !state.open || !state.wantMic || state.speaking || state.pending) return;
+    if (!state.open || !state.wantMic || state.speaking || state.pending || state.mode === "write") return;
+    if (canCapture()) {
+      if (captureRef.current) {
+        captureRef.current.resume();
+        setListening(true);
+      } else {
+        ensureCapture();
+      }
+      return;
+    }
+    const Constructor = recognitionConstructor();
+    if (!Constructor) return;
     sessionRef.current += 1;
     const session = sessionRef.current;
     const previous = recognitionRef.current;
@@ -403,7 +456,7 @@ export function Assistant() {
     } catch {
       setListening(false);
     }
-  }, [resumeMic, stopListening]);
+  }, [ensureCapture, resumeMic, stopListening]);
 
   const stopSpeaking = useCallback(() => {
     controls.current.speaking = false;
@@ -629,12 +682,41 @@ export function Assistant() {
 
   sendRef.current = send;
 
+  utteranceRef.current = async (wav: Blob) => {
+    const state = controls.current;
+    if (!state.open || state.pending || state.speaking || state.mode === "write") return;
+    captureRef.current?.pause();
+    setListening(false);
+    controls.current.pending = true;
+    setPending(true);
+    let text = "";
+    try {
+      const response = await fetch(transcribeEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "audio/wav" },
+        body: wav,
+      });
+      const data = (await response.json()) as { text?: string };
+      text = collapseStutter(data.text || "");
+    } catch {
+      text = "";
+    }
+    controls.current.pending = false;
+    setPending(false);
+    if (!text || !controls.current.open) {
+      resumeMic(80);
+      return;
+    }
+    void send(text);
+  };
+
   function closeAssistant() {
     controls.current.open = false;
     controls.current.wantMic = false;
     hangupRef.current = false;
     setOpen(false);
     stopListening();
+    releaseCapture();
     stopFiller();
     stopSpeaking();
     setListening(false);
@@ -661,6 +743,7 @@ export function Assistant() {
     setDraft("");
     setPending(false);
     setOpen(true);
+    ensureCapture();
     void speak("Hola, soy la recepción de Juliana Escobar. ¿Buscas un facial, un masaje o un día de spa?");
   }
 
@@ -686,10 +769,12 @@ export function Assistant() {
       controls.current.wantMic = false;
       stopSpeaking();
       stopListening();
+      releaseCapture();
       setDraft("");
       return;
     }
     controls.current.wantMic = true;
+    ensureCapture();
     void speak(next === "ear" ? "Te escucho. Acerca el celular a tu oreja." : "Te escucho en altavoz.");
   }
 
@@ -756,6 +841,7 @@ export function Assistant() {
                   ? "Acerca el celular a tu oreja y habla con normalidad."
                   : "Puedes dejar el celular sobre la mesa."}
               </span>
+              {lastReserva && <ReservaCard reserva={lastReserva} />}
             </div>
           )}
 

@@ -1125,7 +1125,7 @@ h3 {
   font-size: 0.95rem;
 }
 
-.assistant__msg .reserva-card a {
+.reserva-card a {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1137,7 +1137,7 @@ h3 {
   text-decoration: none;
 }
 
-.assistant__msg .reserva-card a.reserva-card__primary {
+.reserva-card a.reserva-card__primary {
   border-color: transparent;
   background: linear-gradient(180deg, #f3d68e, #d3ab55);
   color: #1a130a;
@@ -1150,7 +1150,13 @@ h3 {
   justify-items: center;
   gap: 0.8rem;
   padding: 2rem 1.5rem;
+  overflow-y: auto;
   text-align: center;
+}
+
+.assistant__live .reserva-card {
+  width: min(24rem, 100%);
+  text-align: left;
 }
 
 .assistant__live p {

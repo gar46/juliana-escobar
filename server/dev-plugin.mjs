@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { loadEnv } from "vite";
-import { handleAssistant, handleVoice } from "./logic.mjs";
+import { handleAssistant, handleTranscribe, handleVoice } from "./logic.mjs";
 
 const schema = `
   CREATE TABLE IF NOT EXISTS turnos (
@@ -79,6 +79,7 @@ export function assistantDevPlugin() {
         });
       route("/api/assistant", handleAssistant);
       route("/api/voice", handleVoice);
+      route("/api/transcribe", handleTranscribe);
     },
   };
 }
